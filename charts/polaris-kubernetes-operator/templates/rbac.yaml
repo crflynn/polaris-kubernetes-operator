@@ -9,6 +9,9 @@ rules:
   - apiGroups: [""]
     resources: [secrets]
     verbs: [get, list, watch]
+  - apiGroups: [gateway.networking.k8s.io]
+    resources: [httproutes]
+    verbs: [create, delete, get, patch, update]
   - apiGroups: [polaris.apache.org]
     resources:
       - polarisconnections

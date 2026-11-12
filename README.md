@@ -8,7 +8,7 @@ The operator does not write directly to the Polaris metastore.
 
 ## Project status
 
-Connection, catalog, governance, policy, and namespace reconciliation are implemented. Table, view, and generic-table ownership remains future work.
+Connection, catalog, governance, policy, namespace, table/view observation and registration, and Generic Table reconciliation are implemented. The optional `PolarisServer` controller manages a Polaris Deployment and in-namespace Service; it does not replace the official Polaris Helm chart or provision external dependencies.
 
 ## Prerequisites
 
@@ -82,6 +82,28 @@ The chart and CRD lifecycle, configurable values, and packaging instructions are
 ## Resource examples
 
 Practical connection, catalog, governance, and policy manifests are in [`examples/`](examples/README.md). The examples use Secret references rather than embedding credentials and document their prerequisites and apply order.
+
+`config/samples/polaris_v1alpha1_polarisserver.yaml` shows the optional server workload resource.
+
+## PolarisServer
+
+`PolarisServer` manages a Kubernetes `Deployment`, a Catalog API `Service`, an internal-only Management API `Service`, and optional `Ingress` and Gateway API `HTTPRoute` resources. It is separate from the official Polaris Helm chart: never let Helm and `PolarisServer` manage the same Polaris instance. The controller refuses to take over existing workloads or requested exposure resources; remove the old server workload after backing up its configuration and preserving external dependencies before creating `PolarisServer`.
+
+The required `spec.image` pins the server image. `spec.replicas` defaults to 1, `spec.port` to the Catalog API port 8181, and `spec.managementPort` to the Management API and health-check port 8182. Only the Catalog Service is configurable as `ClusterIP` (default), `NodePort`, or `LoadBalancer`; the Management Service remains `ClusterIP` so exposing catalog traffic does not expose the management API. `spec.service.annotations` configures cloud-specific behavior on the Catalog Service.
+
+`spec.ingress` optionally creates a `networking.k8s.io/v1` Ingress routing the Catalog API by host and path. An optional `tlsSecretName` enables TLS using a Secret already present in the same namespace. The Management API is not exposed through the Ingress. Ingress class and annotations are configurable.
+
+`spec.httpRoute` optionally creates a Gateway API `HTTPRoute` to the Catalog Service. Gateway API CRDs and a compatible Gateway controller are external prerequisites; install them before configuring this field. With no `spec.httpRoute`, the operator does not query or watch Gateway API resources. Configure `parentRefs` for a Gateway and ensure its listeners allow routes from the PolarisServer namespace. `hostnames` is optional; `path` defaults to `/` and uses a PathPrefix match. TLS is configured on the Gateway listener, not on PolarisServer. Ingress and HTTPRoute can be enabled together.
+
+Pod configuration includes `env` and `envFrom`, existing image-pull Secrets and ServiceAccounts, resources, pod/container security contexts, pod annotations, volumes and mounts, init containers, node selectors, affinity, tolerations, topology spread constraints, priority class, and termination grace period. All referenced Kubernetes resources remain caller-managed; the controller does not create Secrets, ConfigMaps, ServiceAccounts, or PVCs. It does not copy Secret data into the custom resource or status.
+
+Database, object storage, identity-provider, realm setup, and persistent Polaris metadata remain outside this resource. Polaris requires external server configuration; provide it using the referenced ConfigMap or Secret and manage those dependencies independently. Environment-variable updates require a Deployment rollout, so update a pod-template-affecting `PolarisServer` field when referenced values change.
+
+The controller uses HTTP startup, readiness, and liveness probes at `/q/health/started`, `/q/health/ready`, and `/q/health/live` on the management port. The startup probe allows up to five minutes for initialization. `status.conditions[Ready]` becomes true only when the desired Deployment replicas are ready; `status.serviceName` and `status.managementServiceName` report the Catalog and internal Management Service names.
+
+Deleting `PolarisServer` deletes its owned Deployment, both Services, and optional Ingress and HTTPRoute through Kubernetes garbage collection. It does not delete external dependencies, object-store data, or Polaris catalog entities. `status.httpRouteName` reports the managed HTTPRoute name when configured.
+
+Example: `config/samples/polaris_v1alpha1_polarisserver.yaml`. Provision its referenced ConfigMap, Secrets, and ServiceAccount before applying it.
 
 ## PolarisConnection
 
