@@ -51,9 +51,9 @@ func TestPolarisViewAdoptObservesWithoutMutation(t *testing.T) {
 	defer server.Close()
 
 	view := &polarisv1alpha1.PolarisView{
-		ObjectMeta: metav1.ObjectMeta{Name: "summary", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: catalogRoleGrantTestSummary, Namespace: testDefaultNamespace},
 		Spec: polarisv1alpha1.PolarisViewSpec{
-			CatalogRef: "warehouse", Namespace: []string{"db", "schema"}, ViewName: "summary",
+			CatalogRef: testWarehouseCatalogName, Namespace: []string{"db", catalogRoleGrantTestSchema}, ViewName: catalogRoleGrantTestSummary,
 			MetadataLocation: "s3://warehouse/desired-view.metadata.json", OwnershipMode: polarisv1alpha1.PolarisOwnershipAdopt,
 		},
 	}
@@ -65,9 +65,9 @@ func TestPolarisViewAdoptObservesWithoutMutation(t *testing.T) {
 	if err := kubeClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
-	if gets != 1 || mutations != 0 || !meta.IsStatusConditionTrue(stored.Status.Conditions, "Ready") ||
+	if gets != 1 || mutations != 0 || !meta.IsStatusConditionTrue(stored.Status.Conditions, readyConditionType) ||
 		!meta.IsStatusConditionTrue(stored.Status.Conditions, "Drifted") ||
-		!slices.Equal(stored.Status.DriftedFields, []string{"metadataLocation"}) {
+		!slices.Equal(stored.Status.DriftedFields, []string{testMetadataLocationProperty}) {
 		t.Fatalf("adoption result: gets=%d mutations=%d status=%#v", gets, mutations, stored.Status)
 	}
 }
@@ -95,9 +95,9 @@ func TestPolarisViewDeleteRetainsFinalizerUntilRemoteDeleteSucceeds(t *testing.T
 	defer server.Close()
 
 	view := &polarisv1alpha1.PolarisView{
-		ObjectMeta: metav1.ObjectMeta{Name: "summary", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: catalogRoleGrantTestSummary, Namespace: testDefaultNamespace},
 		Spec: polarisv1alpha1.PolarisViewSpec{
-			CatalogRef: "warehouse", Namespace: []string{"db", "schema"}, ViewName: "summary",
+			CatalogRef: testWarehouseCatalogName, Namespace: []string{"db", catalogRoleGrantTestSchema}, ViewName: catalogRoleGrantTestSummary,
 			OwnershipMode: polarisv1alpha1.PolarisOwnershipEnforce, DeletionPolicy: polarisv1alpha1.PolarisDeletionDelete,
 		},
 	}
@@ -129,7 +129,7 @@ func TestPolarisViewDeleteRetainsFinalizerUntilRemoteDeleteSucceeds(t *testing.T
 	if !slices.Contains(stored.Finalizers, polarisViewFinalizer) {
 		t.Fatal("view finalizer was removed after the remote delete failed")
 	}
-	ready := meta.FindStatusCondition(stored.Status.Conditions, "Ready")
+	ready := meta.FindStatusCondition(stored.Status.Conditions, readyConditionType)
 	if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != "ViewDeleteFailed" {
 		t.Fatalf("delete failure condition = %#v", ready)
 	}
@@ -154,12 +154,12 @@ func newViewTestReconciler(t *testing.T, server *httptest.Server, view *polarisv
 	if err := polarisv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	ready := metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", Message: "ready", LastTransitionTime: metav1.Now()}
+	ready := metav1.Condition{Type: readyConditionType, Status: metav1.ConditionTrue, Reason: readyConditionType, Message: "ready", LastTransitionTime: metav1.Now()}
 	connection := &polarisv1alpha1.PolarisConnection{
-		ObjectMeta: metav1.ObjectMeta{Name: "remote", Namespace: view.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: testRemoteConnectionName, Namespace: view.Namespace},
 		Spec: polarisv1alpha1.PolarisConnectionSpec{
 			ManagementURL: server.URL + "/api/management/v1", CatalogURL: server.URL + "/api/catalog",
-			Auth: polarisv1alpha1.PolarisConnectionAuth{BearerTokenSecretRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "auth"}, Key: "token"}},
+			Auth: polarisv1alpha1.PolarisConnectionAuth{BearerTokenSecretRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: testAuthSecretName}, Key: testTokenKey}},
 		},
 		Status: polarisv1alpha1.PolarisConnectionStatus{Conditions: []metav1.Condition{ready}, NamespaceSeparator: "."},
 	}
@@ -168,7 +168,7 @@ func newViewTestReconciler(t *testing.T, server *httptest.Server, view *polarisv
 		Spec:       polarisv1alpha1.PolarisCatalogSpec{ConnectionRef: connection.Name, CatalogName: "warehouse"},
 		Status:     polarisv1alpha1.PolarisCatalogStatus{Conditions: []metav1.Condition{ready}},
 	}
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: view.Namespace}, Data: map[string][]byte{"token": []byte("test-token")}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: testAuthSecretName, Namespace: view.Namespace}, Data: map[string][]byte{"token": []byte("test-token")}}
 	kubeClient := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(view, &polarisv1alpha1.PolarisCatalog{}, &polarisv1alpha1.PolarisConnection{}).
 		WithObjects(connection, catalog, secret, view).Build()

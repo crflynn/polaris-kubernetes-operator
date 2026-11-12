@@ -37,10 +37,16 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+const (
+	namespaceTestSchema        = "schema"
+	namespaceTestOwnerProperty = testOwnerProperty
+	namespaceTestOwnerValue    = "team"
+)
+
 func TestPolarisNamespaceEnforceCreatesAndProtectsDelete(t *testing.T) {
 	ctx := context.Background()
 	const collectionPath = "/api/catalog/v1/warehouse/namespaces"
-	const namespacePath = collectionPath + "/db.schema"
+	const namespacePath = collectionPath + "/db." + namespaceTestSchema
 	var created, empty, deleted bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if got := req.URL.EscapedPath(); got != collectionPath && got != namespacePath {
@@ -52,18 +58,18 @@ func TestPolarisNamespaceEnforceCreatesAndProtectsDelete(t *testing.T) {
 				http.NotFound(w, req)
 				return
 			}
-			_, _ = w.Write([]byte(`{"namespace":["db","schema"],"properties":{"owner":"team"}}`))
+			_, _ = w.Write([]byte(`{"namespace":["db","` + namespaceTestSchema + `"],"properties":{"` + namespaceTestOwnerProperty + `":"` + namespaceTestOwnerValue + `"}}`))
 		case http.MethodPost:
 			var body map[string]any
 			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 				t.Errorf("decode namespace create: %v", err)
 			}
-			if !reflect.DeepEqual(body["namespace"], []any{"db", "schema"}) ||
-				!reflect.DeepEqual(body["properties"], map[string]any{"owner": "team"}) {
+			if !reflect.DeepEqual(body["namespace"], []any{"db", namespaceTestSchema}) ||
+				!reflect.DeepEqual(body["properties"], map[string]any{namespaceTestOwnerProperty: namespaceTestOwnerValue}) {
 				t.Errorf("create body = %#v", body)
 			}
 			created = true
-			_, _ = w.Write([]byte(`{"namespace":["db","schema"],"properties":{"owner":"team"}}`))
+			_, _ = w.Write([]byte(`{"namespace":["db","` + namespaceTestSchema + `"],"properties":{"` + namespaceTestOwnerProperty + `":"` + namespaceTestOwnerValue + `"}}`))
 		case http.MethodDelete:
 			if empty {
 				deleted = true
@@ -79,7 +85,7 @@ func TestPolarisNamespaceEnforceCreatesAndProtectsDelete(t *testing.T) {
 	defer server.Close()
 
 	namespace := testPolarisNamespace("Enforce", "Delete")
-	namespace.Spec.Properties = map[string]string{"owner": "team"}
+	namespace.Spec.Properties = map[string]string{namespaceTestOwnerProperty: namespaceTestOwnerValue}
 	reconciler, kubeClient, request := newNamespaceTestReconciler(t, server, namespace)
 
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
@@ -92,8 +98,8 @@ func TestPolarisNamespaceEnforceCreatesAndProtectsDelete(t *testing.T) {
 	if err := kubeClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
-	if !created || !meta.IsStatusConditionTrue(stored.Status.Conditions, "Ready") ||
-		!slices.Equal(stored.Status.ManagedPropertyKeys, []string{"owner"}) {
+	if !created || !meta.IsStatusConditionTrue(stored.Status.Conditions, readyConditionType) ||
+		!slices.Equal(stored.Status.ManagedPropertyKeys, []string{namespaceTestOwnerProperty}) {
 		t.Fatalf("namespace create status = %#v, created=%t", stored.Status, created)
 	}
 
@@ -108,7 +114,7 @@ func TestPolarisNamespaceEnforceCreatesAndProtectsDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !slices.Contains(stored.Finalizers, namespaceFinalizer) ||
-		meta.IsStatusConditionTrue(stored.Status.Conditions, "Ready") {
+		meta.IsStatusConditionTrue(stored.Status.Conditions, readyConditionType) {
 		t.Fatalf("non-empty namespace deletion was not blocked: %#v", stored)
 	}
 
@@ -126,12 +132,12 @@ func TestPolarisNamespaceEnforceCreatesAndProtectsDelete(t *testing.T) {
 
 func TestPolarisNamespaceObserveReportsDriftWithoutMutation(t *testing.T) {
 	ctx := context.Background()
-	const namespacePath = "/api/catalog/v1/warehouse/namespaces/db.schema"
+	const namespacePath = "/api/catalog/v1/warehouse/namespaces/db." + namespaceTestSchema
 	var gets, mutations int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Method == http.MethodGet && req.URL.EscapedPath() == namespacePath {
 			gets++
-			_, _ = w.Write([]byte(`{"namespace":["db","schema"],"properties":{"owner":"external","system":"keep"}}`))
+			_, _ = w.Write([]byte(`{"namespace":["db","` + namespaceTestSchema + `"],"properties":{"` + namespaceTestOwnerProperty + `":"external","system":"keep"}}`))
 			return
 		}
 		mutations++
@@ -140,7 +146,7 @@ func TestPolarisNamespaceObserveReportsDriftWithoutMutation(t *testing.T) {
 	defer server.Close()
 
 	namespace := testPolarisNamespace("Observe", "Orphan")
-	namespace.Spec.Properties = map[string]string{"owner": "desired"}
+	namespace.Spec.Properties = map[string]string{namespaceTestOwnerProperty: testDesiredValue}
 	reconciler, kubeClient, request := newNamespaceTestReconciler(t, server, namespace)
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("observe reconcile: %v", err)
@@ -149,7 +155,7 @@ func TestPolarisNamespaceObserveReportsDriftWithoutMutation(t *testing.T) {
 	if err := kubeClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
-	if gets != 1 || mutations != 0 || !meta.IsStatusConditionTrue(stored.Status.Conditions, "Ready") ||
+	if gets != 1 || mutations != 0 || !meta.IsStatusConditionTrue(stored.Status.Conditions, readyConditionType) ||
 		!meta.IsStatusConditionTrue(stored.Status.Conditions, "Drifted") ||
 		!slices.Equal(stored.Status.DriftedFields, []string{"properties.owner"}) {
 		t.Fatalf("observe result: gets=%d mutations=%d status=%#v", gets, mutations, stored.Status)
@@ -158,22 +164,22 @@ func TestPolarisNamespaceObserveReportsDriftWithoutMutation(t *testing.T) {
 
 func TestPolarisNamespaceAdoptWaitsBeforeApplyingDesiredProperties(t *testing.T) {
 	ctx := context.Background()
-	const namespacePath = "/api/catalog/v1/warehouse/namespaces/db.schema"
+	const namespacePath = "/api/catalog/v1/warehouse/namespaces/db." + namespaceTestSchema
 	var updates, creates, deletes int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch {
 		case req.Method == http.MethodGet && req.URL.EscapedPath() == namespacePath:
-			_, _ = w.Write([]byte(`{"namespace":["db","schema"],"properties":{"owner":"external","system":"keep"}}`))
+			_, _ = w.Write([]byte(`{"namespace":["db","` + namespaceTestSchema + `"],"properties":{"` + namespaceTestOwnerProperty + `":"external","system":"keep"}}`))
 		case req.Method == http.MethodPost && req.URL.EscapedPath() == namespacePath+"/properties":
 			var body map[string]any
 			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 				t.Errorf("decode property update: %v", err)
 			}
-			if !reflect.DeepEqual(body["updates"], map[string]any{"owner": "desired"}) || body["removals"] != nil {
+			if !reflect.DeepEqual(body["updates"], map[string]any{namespaceTestOwnerProperty: testDesiredValue}) || body["removals"] != nil {
 				t.Errorf("adopt update body = %#v", body)
 			}
 			updates++
-			_, _ = w.Write([]byte(`{"updated":["owner"],"removed":[],"missing":[]}`))
+			_, _ = w.Write([]byte(`{"updated":["` + namespaceTestOwnerProperty + `"],"removed":[],"missing":[]}`))
 		case req.Method == http.MethodPost:
 			creates++
 			http.Error(w, "unexpected create", http.StatusBadRequest)
@@ -188,7 +194,7 @@ func TestPolarisNamespaceAdoptWaitsBeforeApplyingDesiredProperties(t *testing.T)
 	defer server.Close()
 
 	namespace := testPolarisNamespace("Adopt", "Orphan")
-	namespace.Spec.Properties = map[string]string{"owner": "desired"}
+	namespace.Spec.Properties = map[string]string{namespaceTestOwnerProperty: testDesiredValue}
 	reconciler, kubeClient, request := newNamespaceTestReconciler(t, server, namespace)
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("initial adopt reconcile: %v", err)
@@ -210,19 +216,19 @@ func TestPolarisNamespaceAdoptWaitsBeforeApplyingDesiredProperties(t *testing.T)
 	if err := kubeClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
-	if !meta.IsStatusConditionTrue(stored.Status.Conditions, "Ready") ||
+	if !meta.IsStatusConditionTrue(stored.Status.Conditions, readyConditionType) ||
 		meta.IsStatusConditionTrue(stored.Status.Conditions, "Drifted") ||
-		!slices.Equal(stored.Status.ManagedPropertyKeys, []string{"owner"}) {
+		!slices.Equal(stored.Status.ManagedPropertyKeys, []string{namespaceTestOwnerProperty}) {
 		t.Fatalf("adopted namespace status = %#v", stored.Status)
 	}
 }
 
 func testPolarisNamespace(ownership, deletion string) *polarisv1alpha1.PolarisNamespace {
 	return &polarisv1alpha1.PolarisNamespace{
-		ObjectMeta: metav1.ObjectMeta{Name: "db-schema", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "db-schema", Namespace: testDefaultNamespace},
 		Spec: polarisv1alpha1.PolarisNamespaceSpec{
-			CatalogRef:     "warehouse",
-			Namespace:      []string{"db", "schema"},
+			CatalogRef:     testWarehouseCatalogName,
+			Namespace:      []string{"db", namespaceTestSchema},
 			OwnershipMode:  polarisv1alpha1.PolarisOwnershipMode(ownership),
 			DeletionPolicy: polarisv1alpha1.PolarisDeletionPolicy(deletion),
 		},
@@ -243,16 +249,16 @@ func newNamespaceTestReconciler(
 		t.Fatal(err)
 	}
 	ready := metav1.Condition{
-		Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", Message: "ready",
+		Type: readyConditionType, Status: metav1.ConditionTrue, Reason: readyConditionType, Message: readyConditionType,
 		LastTransitionTime: metav1.Now(),
 	}
 	connection := &polarisv1alpha1.PolarisConnection{
-		ObjectMeta: metav1.ObjectMeta{Name: "remote", Namespace: namespace.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: testRemoteConnectionName, Namespace: namespace.Namespace},
 		Spec: polarisv1alpha1.PolarisConnectionSpec{
 			ManagementURL: server.URL + "/api/management/v1",
 			CatalogURL:    server.URL + "/api/catalog",
 			Auth: polarisv1alpha1.PolarisConnectionAuth{BearerTokenSecretRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "auth"}, Key: "token",
+				LocalObjectReference: corev1.LocalObjectReference{Name: testAuthSecretName}, Key: testTokenKey,
 			}},
 		},
 		Status: polarisv1alpha1.PolarisConnectionStatus{
@@ -261,12 +267,12 @@ func newNamespaceTestReconciler(
 	}
 	catalog := &polarisv1alpha1.PolarisCatalog{
 		ObjectMeta: metav1.ObjectMeta{Name: namespace.Spec.CatalogRef, Namespace: namespace.Namespace},
-		Spec:       polarisv1alpha1.PolarisCatalogSpec{ConnectionRef: connection.Name, CatalogName: "warehouse"},
+		Spec:       polarisv1alpha1.PolarisCatalogSpec{ConnectionRef: connection.Name, CatalogName: testWarehouseCatalogName},
 		Status:     polarisv1alpha1.PolarisCatalogStatus{Conditions: []metav1.Condition{ready}},
 	}
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: namespace.Namespace},
-		Data:       map[string][]byte{"token": []byte("test-token")},
+		ObjectMeta: metav1.ObjectMeta{Name: testAuthSecretName, Namespace: namespace.Namespace},
+		Data:       map[string][]byte{testTokenKey: []byte("test-token")},
 	}
 	kubeClient := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(&polarisv1alpha1.PolarisNamespace{}, &polarisv1alpha1.PolarisCatalog{}, &polarisv1alpha1.PolarisConnection{}).

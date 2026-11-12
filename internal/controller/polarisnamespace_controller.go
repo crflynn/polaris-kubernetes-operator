@@ -72,7 +72,7 @@ func (r *PolarisNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 		return ctrl.Result{}, err
 	}
-	if !meta.IsStatusConditionTrue(catalog.Status.Conditions, "Ready") {
+	if !meta.IsStatusConditionTrue(catalog.Status.Conditions, catalogReadyConditionType) {
 		return r.namespaceFailure(ctx, namespace, "CatalogNotReady", errors.New("referenced PolarisCatalog is not Ready"))
 	}
 
@@ -105,14 +105,14 @@ func (r *PolarisNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 			if err := r.Update(ctx, namespace); err != nil {
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
 	} else if controllerutil.ContainsFinalizer(namespace, namespaceFinalizer) {
 		controllerutil.RemoveFinalizer(namespace, namespaceFinalizer)
 		if err := r.Update(ctx, namespace); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	if namespace.Status.RemoteCatalogName != "" &&
@@ -137,7 +137,7 @@ func (r *PolarisNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return r.namespaceFailure(ctx, namespace, "NamespaceReadFailed", err)
 	}
 	if !slices.Equal(remote.Namespace, namespace.Spec.Namespace) {
-		return r.namespaceFailure(ctx, namespace, "RemoteIdentityMismatch", errors.New("Polaris returned a different namespace identity"))
+		return r.namespaceFailure(ctx, namespace, "RemoteIdentityMismatch", errors.New("polaris returned a different namespace identity"))
 	}
 
 	adopting := mode == polarisv1alpha1.PolarisOwnershipAdopt && namespace.Status.RemoteCatalogName == ""
@@ -195,7 +195,7 @@ func (r *PolarisNamespaceReconciler) reconcileNamespaceProperties(
 		return managed, drifted, nil
 	}
 	if actual == nil && (len(desired) > 0 || len(managed) > 0) {
-		return nil, nil, errors.New("Polaris does not report namespace properties, so managed property changes cannot be reconciled safely")
+		return nil, nil, errors.New("polaris does not report namespace properties, so managed property changes cannot be reconciled safely")
 	}
 
 	updates := make(map[string]string, len(desired))
@@ -276,15 +276,15 @@ func (r *PolarisNamespaceReconciler) namespaceSuccess(
 	namespace.Status.DriftedFields = slices.Clone(drifted)
 	namespace.Status.LastReconciledTime = &now
 	meta.SetStatusCondition(&namespace.Status.Conditions, metav1.Condition{
-		Type: "Ready", Status: metav1.ConditionTrue, ObservedGeneration: namespace.Generation,
+		Type: readyConditionType, Status: metav1.ConditionTrue, ObservedGeneration: namespace.Generation,
 		LastTransitionTime: now, Reason: "NamespaceObserved", Message: "Polaris namespace was reconciled",
 	})
-	driftStatus, driftReason, driftMessage := metav1.ConditionFalse, "NoDrift", "Polaris namespace matches managed properties"
+	driftStatus, driftReason, driftMessage := metav1.ConditionFalse, noDriftReason, "Polaris namespace matches managed properties"
 	if len(drifted) > 0 {
-		driftStatus, driftReason, driftMessage = metav1.ConditionTrue, "DriftDetected", fmt.Sprintf("Polaris namespace differs in %v", drifted)
+		driftStatus, driftReason, driftMessage = metav1.ConditionTrue, driftDetectedReason, fmt.Sprintf("Polaris namespace differs in %v", drifted)
 	}
 	meta.SetStatusCondition(&namespace.Status.Conditions, metav1.Condition{
-		Type: "Drifted", Status: driftStatus, ObservedGeneration: namespace.Generation,
+		Type: driftedConditionType, Status: driftStatus, ObservedGeneration: namespace.Generation,
 		LastTransitionTime: now, Reason: driftReason, Message: driftMessage,
 	})
 	if err := r.Status().Update(ctx, namespace); err != nil {
@@ -300,7 +300,7 @@ func (r *PolarisNamespaceReconciler) namespaceFailure(
 	cause error,
 ) (ctrl.Result, error) {
 	meta.SetStatusCondition(&namespace.Status.Conditions, metav1.Condition{
-		Type: "Ready", Status: metav1.ConditionFalse, ObservedGeneration: namespace.Generation,
+		Type: readyConditionType, Status: metav1.ConditionFalse, ObservedGeneration: namespace.Generation,
 		LastTransitionTime: metav1.Now(), Reason: reason, Message: sanitizeErrorMessage(cause),
 	})
 	namespace.Status.ObservedGeneration = namespace.Generation

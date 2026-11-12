@@ -446,7 +446,7 @@ func configuredNamespaceSeparator(config catalogConfig) (string, error) {
 				return "", fmt.Errorf("decode namespace separator from Polaris /v1/config: %w", err)
 			}
 			if separator == "" {
-				return "", errors.New("Polaris /v1/config returned an empty namespace separator")
+				return "", errors.New("polaris /v1/config returned an empty namespace separator")
 			}
 			return separator, nil
 		}
@@ -504,7 +504,7 @@ func (c *Client) CreateNamespace(ctx context.Context, catalogName string, namesp
 	var result Namespace
 	err := c.doJSON(ctx, http.MethodPost,
 		resourceSegmentsURL(c.catalogURL, "v1", catalogName, "namespaces"),
-		createNamespaceRequest{Namespace: namespace.Namespace, Properties: namespace.Properties}, &result)
+		createNamespaceRequest(namespace), &result)
 	return result, err
 }
 

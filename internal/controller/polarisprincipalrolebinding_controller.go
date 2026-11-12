@@ -72,33 +72,11 @@ func (r *PolarisPrincipalRoleBindingReconciler) Reconcile(ctx context.Context, r
 		if err := r.Update(ctx, binding); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	if binding.Status.ObservedPrincipalName == "" {
-		if deleting {
-			// Assignment creation is gated on recording the identity snapshot first.
-			controllerutil.RemoveFinalizer(binding, principalRoleBindingFinalizer)
-			return ctrl.Result{}, r.Update(ctx, binding)
-		}
-		principal := &polarisv1alpha1.PolarisPrincipal{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Spec.PrincipalRef}, principal); err != nil {
-			return r.principalRoleBindingFailure(ctx, binding, "PrincipalNotFound", errors.New("referenced PolarisPrincipal was not found"))
-		}
-		role := &polarisv1alpha1.PolarisPrincipalRole{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Spec.PrincipalRoleRef}, role); err != nil {
-			return r.principalRoleBindingFailure(ctx, binding, "PrincipalRoleNotFound", errors.New("referenced PolarisPrincipalRole was not found"))
-		}
-		if principal.Spec.ConnectionRef != role.Spec.ConnectionRef {
-			return r.principalRoleBindingFailure(ctx, binding, "ConnectionMismatch", errors.New("principal and principal role must use the same PolarisConnection"))
-		}
-		binding.Status.ObservedPrincipalName = principal.Spec.PrincipalName
-		binding.Status.ObservedPrincipalRoleName = role.Spec.RoleName
-		binding.Status.ObservedConnectionRef = principal.Spec.ConnectionRef
-		if err := r.Status().Update(ctx, binding); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{Requeue: true}, nil
+	if result, handled, err := r.recordPrincipalRoleBindingIdentity(ctx, binding); handled {
+		return result, err
 	}
 
 	if !deleting {
@@ -166,6 +144,42 @@ func (r *PolarisPrincipalRoleBindingReconciler) Reconcile(ctx context.Context, r
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: principalRoleBindingRequeueAfter}, nil
+}
+
+func (r *PolarisPrincipalRoleBindingReconciler) recordPrincipalRoleBindingIdentity(
+	ctx context.Context,
+	binding *polarisv1alpha1.PolarisPrincipalRoleBinding,
+) (ctrl.Result, bool, error) {
+	if binding.Status.ObservedPrincipalName != "" {
+		return ctrl.Result{}, false, nil
+	}
+	if !binding.DeletionTimestamp.IsZero() {
+		// Assignment creation is gated on recording the identity snapshot first.
+		controllerutil.RemoveFinalizer(binding, principalRoleBindingFinalizer)
+		return ctrl.Result{}, true, r.Update(ctx, binding)
+	}
+
+	principal := &polarisv1alpha1.PolarisPrincipal{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Spec.PrincipalRef}, principal); err != nil {
+		result, failureErr := r.principalRoleBindingFailure(ctx, binding, "PrincipalNotFound", errors.New("referenced PolarisPrincipal was not found"))
+		return result, true, failureErr
+	}
+	role := &polarisv1alpha1.PolarisPrincipalRole{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Spec.PrincipalRoleRef}, role); err != nil {
+		result, failureErr := r.principalRoleBindingFailure(ctx, binding, "PrincipalRoleNotFound", errors.New("referenced PolarisPrincipalRole was not found"))
+		return result, true, failureErr
+	}
+	if principal.Spec.ConnectionRef != role.Spec.ConnectionRef {
+		result, failureErr := r.principalRoleBindingFailure(ctx, binding, "ConnectionMismatch", errors.New("principal and principal role must use the same PolarisConnection"))
+		return result, true, failureErr
+	}
+	binding.Status.ObservedPrincipalName = principal.Spec.PrincipalName
+	binding.Status.ObservedPrincipalRoleName = role.Spec.RoleName
+	binding.Status.ObservedConnectionRef = principal.Spec.ConnectionRef
+	if err := r.Status().Update(ctx, binding); err != nil {
+		return ctrl.Result{}, true, err
+	}
+	return ctrl.Result{RequeueAfter: time.Second}, true, nil
 }
 
 func (r *PolarisPrincipalRoleBindingReconciler) principalRoleBindingFailure(ctx context.Context, binding *polarisv1alpha1.PolarisPrincipalRoleBinding, reason string, cause error) (ctrl.Result, error) {

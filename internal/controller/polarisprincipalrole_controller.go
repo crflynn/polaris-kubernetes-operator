@@ -40,7 +40,7 @@ import (
 
 const (
 	principalRoleFinalizer          = "polaris.apache.org/principal-role-cleanup"
-	principalRoleReadyConditionType = "Ready"
+	principalRoleReadyConditionType = readyConditionType
 	principalRoleRequeueAfter       = 30 * time.Second
 )
 
@@ -92,7 +92,7 @@ func (r *PolarisPrincipalRoleReconciler) Reconcile(ctx context.Context, req ctrl
 		if err := r.Update(ctx, role); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	remote, err := apiClient.GetPrincipalRole(ctx, role.Spec.RoleName)

@@ -69,7 +69,7 @@ func (r *PolarisViewReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		}
 		return ctrl.Result{}, err
 	}
-	if !meta.IsStatusConditionTrue(catalog.Status.Conditions, "Ready") {
+	if !meta.IsStatusConditionTrue(catalog.Status.Conditions, readyConditionType) {
 		return r.viewFailure(ctx, view, "CatalogNotReady", errors.New("referenced PolarisCatalog is not Ready"))
 	}
 
@@ -105,14 +105,14 @@ func (r *PolarisViewReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			if err := r.Update(ctx, view); err != nil {
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
 	} else if controllerutil.ContainsFinalizer(view, polarisViewFinalizer) {
 		controllerutil.RemoveFinalizer(view, polarisViewFinalizer)
 		if err := r.Update(ctx, view); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 	if mode != polarisv1alpha1.PolarisOwnershipObserve && view.Status.RemoteCatalogName != "" &&
 		(view.Status.RemoteCatalogName != catalog.Spec.CatalogName || !slices.Equal(view.Status.RemoteNamespace, view.Spec.Namespace) || view.Status.RemoteViewName != view.Spec.ViewName) {
@@ -164,7 +164,7 @@ func (r *PolarisViewReconciler) viewSuccess(ctx context.Context, view *polarisv1
 	view.Status.RemoteMetadataLocation = metadataLocation
 	view.Status.DriftedFields = slices.Clone(drifted)
 	view.Status.LastReconciledTime = &now
-	meta.SetStatusCondition(&view.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, ObservedGeneration: view.Generation, LastTransitionTime: now, Reason: "ViewObserved", Message: "Polaris view registration was observed"})
+	meta.SetStatusCondition(&view.Status.Conditions, metav1.Condition{Type: readyConditionType, Status: metav1.ConditionTrue, ObservedGeneration: view.Generation, LastTransitionTime: now, Reason: "ViewObserved", Message: "Polaris view registration was observed"})
 	driftStatus, driftReason := metav1.ConditionFalse, "NoDrift"
 	driftMessage := "Polaris view registration was observed with no metadataLocation constraint"
 	if view.Spec.MetadataLocation != "" {
@@ -181,7 +181,7 @@ func (r *PolarisViewReconciler) viewSuccess(ctx context.Context, view *polarisv1
 }
 
 func (r *PolarisViewReconciler) viewFailure(ctx context.Context, view *polarisv1alpha1.PolarisView, reason string, cause error) (ctrl.Result, error) {
-	meta.SetStatusCondition(&view.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, ObservedGeneration: view.Generation, LastTransitionTime: metav1.Now(), Reason: reason, Message: sanitizeErrorMessage(cause)})
+	meta.SetStatusCondition(&view.Status.Conditions, metav1.Condition{Type: readyConditionType, Status: metav1.ConditionFalse, ObservedGeneration: view.Generation, LastTransitionTime: metav1.Now(), Reason: reason, Message: sanitizeErrorMessage(cause)})
 	view.Status.ObservedGeneration = view.Generation
 	if err := r.Status().Update(ctx, view); err != nil {
 		return ctrl.Result{}, err

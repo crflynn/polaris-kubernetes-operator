@@ -27,7 +27,7 @@ import (
 
 // ErrUnsupported indicates that the configured Polaris endpoint does not expose
 // the Generic Table API.
-var ErrUnsupported = errors.New("Polaris Generic Table API is unsupported")
+var ErrUnsupported = errors.New("polaris Generic Table API is unsupported")
 
 // GenericTable is the non-secret representation of a Polaris generic table.
 type GenericTable struct {

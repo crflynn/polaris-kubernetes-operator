@@ -29,8 +29,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+)
+
+const (
+	catalogRoleTestBearerAuthorization = testBearerAuthorization
+	catalogRoleTestReadAccess          = "read access"
 )
 
 func TestPolarisCatalogRoleLifecycle(t *testing.T) {
@@ -39,7 +45,7 @@ func TestPolarisCatalogRoleLifecycle(t *testing.T) {
 	var creates, updates, deletes int
 	const rolePath = "/api/management/v1/catalogs/warehouse/catalog-roles/analysts"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer test-token" {
+		if r.Header.Get("Authorization") != catalogRoleTestBearerAuthorization {
 			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
 		}
 		switch {
@@ -96,22 +102,22 @@ func TestPolarisCatalogRoleLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	connection := &polarisv1alpha1.PolarisConnection{
-		ObjectMeta: metav1.ObjectMeta{Name: "remote", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: testRemoteConnectionName, Namespace: testDefaultNamespace},
 		Spec: polarisv1alpha1.PolarisConnectionSpec{
 			ManagementURL: server.URL + "/api/management/v1",
 			Auth: polarisv1alpha1.PolarisConnectionAuth{BearerTokenSecretRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "auth"}, Key: "token",
+				LocalObjectReference: corev1.LocalObjectReference{Name: testAuthSecretName}, Key: testTokenKey,
 			}},
 		},
 	}
-	authSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"}, Data: map[string][]byte{"token": []byte("test-token")}}
+	authSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: testAuthSecretName, Namespace: testDefaultNamespace}, Data: map[string][]byte{testTokenKey: []byte("test-token")}}
 	catalog := &polarisv1alpha1.PolarisCatalog{
-		ObjectMeta: metav1.ObjectMeta{Name: "warehouse-resource", Namespace: "default"},
-		Spec:       polarisv1alpha1.PolarisCatalogSpec{ConnectionRef: "remote", CatalogName: "warehouse"},
+		ObjectMeta: metav1.ObjectMeta{Name: testWarehouseCatalogResourceName, Namespace: testDefaultNamespace},
+		Spec:       polarisv1alpha1.PolarisCatalogSpec{ConnectionRef: testRemoteConnectionName, CatalogName: testWarehouseCatalogName},
 	}
 	role := &polarisv1alpha1.PolarisCatalogRole{
-		ObjectMeta: metav1.ObjectMeta{Name: "analysts", Namespace: "default"},
-		Spec:       polarisv1alpha1.PolarisCatalogRoleSpec{CatalogRef: catalog.Name, CatalogRoleName: "analysts", Properties: map[string]string{"description": "read access"}},
+		ObjectMeta: metav1.ObjectMeta{Name: testAnalystRoleName, Namespace: testDefaultNamespace},
+		Spec:       polarisv1alpha1.PolarisCatalogRoleSpec{CatalogRef: catalog.Name, CatalogRoleName: testAnalystRoleName, Properties: map[string]string{testDescriptionProperty: catalogRoleTestReadAccess}},
 	}
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(&polarisv1alpha1.PolarisCatalogRole{}).
@@ -119,42 +125,57 @@ func TestPolarisCatalogRoleLifecycle(t *testing.T) {
 	reconciler := &PolarisCatalogRoleReconciler{Client: k8sClient, Scheme: scheme}
 	request := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: role.Namespace, Name: role.Name}}
 
+	assertCatalogRoleCreationAndSteadyState(t, ctx, k8sClient, reconciler, request, &remote, &creates, &updates)
+	assertCatalogRoleUpdate(t, ctx, k8sClient, reconciler, request, &remote, &updates)
+	assertCatalogRoleDelete(t, ctx, k8sClient, reconciler, request, &remote, &deletes)
+}
+
+func assertCatalogRoleCreationAndSteadyState(t *testing.T, ctx context.Context, k8sClient client.Client, reconciler *PolarisCatalogRoleReconciler, request reconcile.Request, remote **polarisclient.CatalogRole, creates, updates *int) {
+	t.Helper()
 	for range 3 {
 		if _, err := reconciler.Reconcile(ctx, request); err != nil {
 			t.Fatalf("create reconcile: %v", err)
 		}
 	}
-	if creates != 1 || remote == nil || remote.Properties["description"] != "read access" {
-		t.Fatalf("remote role after create: creates=%d remote=%#v", creates, remote)
+	if *creates != 1 || *remote == nil || (*remote).Properties[testDescriptionProperty] != catalogRoleTestReadAccess {
+		t.Fatalf("remote role after create: creates=%d remote=%#v", *creates, *remote)
 	}
 	stored := &polarisv1alpha1.PolarisCatalogRole{}
 	if err := k8sClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored.Status.ObservedCatalogName != "warehouse" || stored.Status.ObservedConnectionRef != "remote" {
+	if stored.Status.ObservedCatalogName != testWarehouseCatalogName || stored.Status.ObservedConnectionRef != testRemoteConnectionName {
 		t.Fatalf("remote identity provenance was not recorded: %#v", stored.Status)
 	}
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("steady-state reconcile: %v", err)
 	}
-	if updates != 0 {
-		t.Fatalf("steady-state reconciliation issued %d updates", updates)
+	if *updates != 0 {
+		t.Fatalf("steady-state reconciliation issued %d updates", *updates)
 	}
+}
 
+func assertCatalogRoleUpdate(t *testing.T, ctx context.Context, k8sClient client.Client, reconciler *PolarisCatalogRoleReconciler, request reconcile.Request, remote **polarisclient.CatalogRole, updates *int) {
+	t.Helper()
+	stored := &polarisv1alpha1.PolarisCatalogRole{}
 	if err := k8sClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
-	stored.Spec.Properties = map[string]string{"description": "write access"}
+	stored.Spec.Properties = map[string]string{testDescriptionProperty: testWriteAccessDescription}
 	if err := k8sClient.Update(ctx, stored); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("update reconcile: %v", err)
 	}
-	if updates != 1 || remote.Properties["description"] != "write access" || remote.EntityVersion != 2 {
-		t.Fatalf("remote role after update: updates=%d remote=%#v", updates, remote)
+	if *updates != 1 || (*remote).Properties[testDescriptionProperty] != testWriteAccessDescription || (*remote).EntityVersion != 2 {
+		t.Fatalf("remote role after update: updates=%d remote=%#v", *updates, *remote)
 	}
+}
 
+func assertCatalogRoleDelete(t *testing.T, ctx context.Context, k8sClient client.Client, reconciler *PolarisCatalogRoleReconciler, request reconcile.Request, remote **polarisclient.CatalogRole, deletes *int) {
+	t.Helper()
+	stored := &polarisv1alpha1.PolarisCatalogRole{}
 	if err := k8sClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +185,7 @@ func TestPolarisCatalogRoleLifecycle(t *testing.T) {
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("delete reconcile: %v", err)
 	}
-	if deletes != 1 || remote != nil {
-		t.Fatalf("remote delete not performed: deletes=%d remote=%#v", deletes, remote)
+	if *deletes != 1 || *remote != nil {
+		t.Fatalf("remote delete not performed: deletes=%d remote=%#v", *deletes, *remote)
 	}
 }

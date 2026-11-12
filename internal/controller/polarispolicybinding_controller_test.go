@@ -34,9 +34,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+const testTableLikeTargetType = "table-like"
+
 func TestPolarisPolicyBindingLifecycle(t *testing.T) {
+	const (
+		targetType = testTableLikeTargetType
+		mode       = "strict"
+		policyName = "retention"
+		policyType = "system.retention"
+	)
 	ctx := context.Background()
-	const mappingPath = "/api/catalog/polaris/v1/warehouse/namespaces/db%1Fschema/policies/retention/mappings"
+	const mappingPath = "/api/catalog/polaris/v1/warehouse/namespaces/db%1Fschema/policies/" + policyName + "/mappings"
 	var attached, detached int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.EscapedPath() != mappingPath {
@@ -52,12 +60,12 @@ func TestPolarisPolicyBindingLifecycle(t *testing.T) {
 		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 			t.Errorf("decode mapping body: %v", err)
 		}
-		if body.Target.Type != "table-like" || !reflect.DeepEqual(body.Target.Path, []string{"db", "schema", "events"}) {
+		if body.Target.Type != targetType || !reflect.DeepEqual(body.Target.Path, []string{"db", catalogRoleGrantTestSchema, testEventsTableName}) {
 			t.Errorf("mapping target = %#v", body.Target)
 		}
 		switch req.Method {
 		case http.MethodPut:
-			if body.Parameters["mode"] != "strict" {
+			if body.Parameters["mode"] != mode {
 				t.Errorf("mapping parameters = %#v", body.Parameters)
 			}
 			attached++
@@ -79,37 +87,37 @@ func TestPolarisPolicyBindingLifecycle(t *testing.T) {
 	if err := polarisv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	ready := metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", Message: "ready", LastTransitionTime: metav1.Now()}
+	ready := metav1.Condition{Type: readyConditionType, Status: metav1.ConditionTrue, Reason: readyConditionType, Message: catalogRoleBindingTestReadyMessage, LastTransitionTime: metav1.Now()}
 	connection := &polarisv1alpha1.PolarisConnection{
-		ObjectMeta: metav1.ObjectMeta{Name: "remote", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: testRemoteConnectionName, Namespace: testDefaultNamespace},
 		Spec: polarisv1alpha1.PolarisConnectionSpec{
 			ManagementURL: server.URL + "/api/management/v1",
 			CatalogURL:    server.URL + "/api/catalog",
 			Auth: polarisv1alpha1.PolarisConnectionAuth{BearerTokenSecretRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "auth"}, Key: "token",
+				LocalObjectReference: corev1.LocalObjectReference{Name: testAuthSecretName}, Key: testTokenKey,
 			}},
 		},
 	}
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"},
-		Data:       map[string][]byte{"token": []byte("test-token")},
+		ObjectMeta: metav1.ObjectMeta{Name: testAuthSecretName, Namespace: testDefaultNamespace},
+		Data:       map[string][]byte{testTokenKey: []byte("test-token")},
 	}
 	policy := &polarisv1alpha1.PolarisPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: "retention", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: policyName, Namespace: testDefaultNamespace},
 		Spec: polarisv1alpha1.PolarisPolicySpec{
-			CatalogRef: "warehouse-resource", Namespace: []string{"db", "schema"}, PolicyName: "retention", Type: "system.retention",
+			CatalogRef: testWarehouseCatalogResourceName, Namespace: []string{"db", catalogRoleGrantTestSchema}, PolicyName: policyName, Type: policyType,
 		},
 		Status: polarisv1alpha1.PolarisPolicyStatus{
-			Conditions: []metav1.Condition{ready}, ObservedCatalogRef: "warehouse-resource",
-			ObservedCatalogName: "warehouse", ObservedConnectionRef: "remote",
-			ObservedNamespace: []string{"db", "schema"}, ObservedPolicyName: "retention", ObservedType: "system.retention",
+			Conditions: []metav1.Condition{ready}, ObservedCatalogRef: testWarehouseCatalogResourceName,
+			ObservedCatalogName: testWarehouseCatalogName, ObservedConnectionRef: testRemoteConnectionName,
+			ObservedNamespace: []string{"db", catalogRoleGrantTestSchema}, ObservedPolicyName: policyName, ObservedType: policyType,
 		},
 	}
 	binding := &polarisv1alpha1.PolarisPolicyBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "retention-on-events", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "retention-on-events", Namespace: testDefaultNamespace},
 		Spec: polarisv1alpha1.PolarisPolicyBindingSpec{
-			PolicyRef: policy.Name, TargetType: "table-like", Namespace: []string{"db", "schema"},
-			TargetName: "events", Parameters: map[string]string{"mode": "strict"},
+			PolicyRef: policy.Name, TargetType: targetType, Namespace: []string{"db", catalogRoleGrantTestSchema},
+			TargetName: testEventsTableName, Parameters: map[string]string{"mode": mode},
 		},
 	}
 	kubeClient := fake.NewClientBuilder().WithScheme(scheme).
@@ -127,14 +135,14 @@ func TestPolarisPolicyBindingLifecycle(t *testing.T) {
 	if err := kubeClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
-	if attached != 1 || !meta.IsStatusConditionTrue(stored.Status.Conditions, "Ready") {
+	if attached != 1 || !meta.IsStatusConditionTrue(stored.Status.Conditions, readyConditionType) {
 		t.Fatalf("attachment state: calls=%d status=%#v", attached, stored.Status)
 	}
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("steady-state reconcile: %v", err)
 	}
 	if attached != 1 {
-		t.Fatalf("steady-state reconcile repeated attachment %d times", attached)
+		t.Fatalf("steady-state reconcile made %d attachment calls", attached)
 	}
 	if err := kubeClient.Delete(ctx, stored); err != nil {
 		t.Fatal(err)
@@ -153,12 +161,12 @@ func TestPolicyTargetValidation(t *testing.T) {
 		spec    polarisv1alpha1.PolarisPolicyBindingSpec
 		wantErr bool
 	}{
-		{name: "catalog", spec: polarisv1alpha1.PolarisPolicyBindingSpec{TargetType: "catalog"}},
-		{name: "namespace", spec: polarisv1alpha1.PolarisPolicyBindingSpec{TargetType: "namespace", Namespace: []string{"db"}}},
-		{name: "table-like", spec: polarisv1alpha1.PolarisPolicyBindingSpec{TargetType: "table-like", Namespace: []string{"db"}, TargetName: "events"}},
-		{name: "catalog with namespace", spec: polarisv1alpha1.PolarisPolicyBindingSpec{TargetType: "catalog", Namespace: []string{"db"}}, wantErr: true},
-		{name: "missing namespace", spec: polarisv1alpha1.PolarisPolicyBindingSpec{TargetType: "namespace"}, wantErr: true},
-		{name: "empty namespace part", spec: polarisv1alpha1.PolarisPolicyBindingSpec{TargetType: "namespace", Namespace: []string{"db", ""}}, wantErr: true},
+		{name: testCatalogGrantType, spec: polarisv1alpha1.PolarisPolicyBindingSpec{TargetType: testCatalogGrantType}},
+		{name: testNamespaceGrantType, spec: polarisv1alpha1.PolarisPolicyBindingSpec{TargetType: testNamespaceGrantType, Namespace: []string{"db"}}},
+		{name: testTableLikeTargetType, spec: polarisv1alpha1.PolarisPolicyBindingSpec{TargetType: testTableLikeTargetType, Namespace: []string{"db"}, TargetName: testEventsTableName}},
+		{name: "catalog with namespace", spec: polarisv1alpha1.PolarisPolicyBindingSpec{TargetType: testCatalogGrantType, Namespace: []string{"db"}}, wantErr: true},
+		{name: "missing namespace", spec: polarisv1alpha1.PolarisPolicyBindingSpec{TargetType: testNamespaceGrantType}, wantErr: true},
+		{name: "empty namespace part", spec: polarisv1alpha1.PolarisPolicyBindingSpec{TargetType: testNamespaceGrantType, Namespace: []string{"db", ""}}, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

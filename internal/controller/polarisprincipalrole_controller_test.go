@@ -29,62 +29,23 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+)
+
+const (
+	principalRoleTestItemPath            = "/api/management/v1/principal-roles/" + testAnalystRoleName
+	principalRoleTestReady               = readyConditionType
+	principalRoleTestBearerAuthorization = testBearerAuthorization
+	principalRoleTestReadAccess          = "read access"
 )
 
 func TestPolarisPrincipalRoleLifecycle(t *testing.T) {
 	ctx := context.Background()
 	var remote *polarisclient.PrincipalRole
 	var creates, updates, deletes int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer test-token" {
-			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
-		}
-		switch {
-		case r.URL.Path == "/api/management/v1/principal-roles/analysts" && r.Method == http.MethodGet:
-			if remote == nil {
-				http.NotFound(w, r)
-				return
-			}
-			_ = json.NewEncoder(w).Encode(remote)
-		case r.URL.Path == "/api/management/v1/principal-roles" && r.Method == http.MethodPost:
-			var body struct {
-				PrincipalRole polarisclient.PrincipalRole `json:"principalRole"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Errorf("decode create: %v", err)
-			}
-			body.PrincipalRole.EntityVersion = 1
-			remote = &body.PrincipalRole
-			creates++
-			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(remote)
-		case r.URL.Path == "/api/management/v1/principal-roles/analysts" && r.Method == http.MethodPut:
-			var body struct {
-				CurrentEntityVersion int64             `json:"currentEntityVersion"`
-				Properties           map[string]string `json:"properties"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Errorf("decode update: %v", err)
-			}
-			if remote == nil || body.CurrentEntityVersion != remote.EntityVersion {
-				http.Error(w, "version conflict", http.StatusConflict)
-				return
-			}
-			remote.Properties = body.Properties
-			remote.EntityVersion++
-			updates++
-			_ = json.NewEncoder(w).Encode(remote)
-		case r.URL.Path == "/api/management/v1/principal-roles/analysts" && r.Method == http.MethodDelete:
-			remote = nil
-			deletes++
-			w.WriteHeader(http.StatusNoContent)
-		default:
-			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
-			http.Error(w, "unexpected", http.StatusBadRequest)
-		}
-	}))
+	server := newPrincipalRoleTestServer(t, &remote, &creates, &updates, &deletes)
 	defer server.Close()
 
 	scheme := runtime.NewScheme()
@@ -95,18 +56,18 @@ func TestPolarisPrincipalRoleLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	connection := &polarisv1alpha1.PolarisConnection{
-		ObjectMeta: metav1.ObjectMeta{Name: "remote", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: testRemoteConnectionName, Namespace: testDefaultNamespace},
 		Spec: polarisv1alpha1.PolarisConnectionSpec{
 			ManagementURL: server.URL + "/api/management/v1",
 			Auth: polarisv1alpha1.PolarisConnectionAuth{BearerTokenSecretRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "auth"}, Key: "token",
+				LocalObjectReference: corev1.LocalObjectReference{Name: testAuthSecretName}, Key: testTokenKey,
 			}},
 		},
 	}
-	authSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"}, Data: map[string][]byte{"token": []byte("test-token")}}
+	authSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: testAuthSecretName, Namespace: testDefaultNamespace}, Data: map[string][]byte{testTokenKey: []byte("test-token")}}
 	role := &polarisv1alpha1.PolarisPrincipalRole{
-		ObjectMeta: metav1.ObjectMeta{Name: "analysts", Namespace: "default"},
-		Spec:       polarisv1alpha1.PolarisPrincipalRoleSpec{ConnectionRef: "remote", RoleName: "analysts", Properties: map[string]string{"description": "read access"}},
+		ObjectMeta: metav1.ObjectMeta{Name: testAnalystRoleName, Namespace: testDefaultNamespace},
+		Spec:       polarisv1alpha1.PolarisPrincipalRoleSpec{ConnectionRef: testRemoteConnectionName, RoleName: testAnalystRoleName, Properties: map[string]string{testDescriptionProperty: principalRoleTestReadAccess}},
 	}
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(&polarisv1alpha1.PolarisPrincipalRole{}).
@@ -119,7 +80,7 @@ func TestPolarisPrincipalRoleLifecycle(t *testing.T) {
 			t.Fatalf("create reconcile: %v", err)
 		}
 	}
-	if creates != 1 || remote == nil || remote.Properties["description"] != "read access" {
+	if creates != 1 || remote == nil || remote.Properties[testDescriptionProperty] != principalRoleTestReadAccess {
 		t.Fatalf("remote role after create: creates=%d remote=%#v", creates, remote)
 	}
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
@@ -133,20 +94,100 @@ func TestPolarisPrincipalRoleLifecycle(t *testing.T) {
 	if err := k8sClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
-	stored.Spec.Properties = map[string]string{"description": "write access"}
+	stored.Spec.Properties = map[string]string{testDescriptionProperty: testWriteAccessDescription}
 	if err := k8sClient.Update(ctx, stored); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("update reconcile: %v", err)
 	}
-	if updates != 1 || remote.Properties["description"] != "write access" || remote.EntityVersion != 2 {
+	if updates != 1 || remote.Properties[testDescriptionProperty] != testWriteAccessDescription || remote.EntityVersion != 2 {
 		t.Fatalf("remote role after update: updates=%d remote=%#v", updates, remote)
 	}
 
 	if err := k8sClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
+	testPrincipalRoleFederatedMismatch(t, ctx, k8sClient, reconciler, request, stored, remote, updates)
+	if err := k8sClient.Get(ctx, request.NamespacedName, stored); err != nil {
+		t.Fatal(err)
+	}
+	if err := k8sClient.Delete(ctx, stored); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reconciler.Reconcile(ctx, request); err != nil {
+		t.Fatalf("delete reconcile: %v", err)
+	}
+	if deletes != 1 || remote != nil {
+		t.Fatalf("remote delete not performed: deletes=%d remote=%#v", deletes, remote)
+	}
+}
+
+func newPrincipalRoleTestServer(
+	t *testing.T,
+	remote **polarisclient.PrincipalRole,
+	creates, updates, deletes *int,
+) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != principalRoleTestBearerAuthorization {
+			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
+		}
+		switch {
+		case r.URL.Path == principalRoleTestItemPath && r.Method == http.MethodGet:
+			if *remote == nil {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(*remote)
+		case r.URL.Path == "/api/management/v1/principal-roles" && r.Method == http.MethodPost:
+			var body struct {
+				PrincipalRole polarisclient.PrincipalRole `json:"principalRole"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode create: %v", err)
+			}
+			body.PrincipalRole.EntityVersion = 1
+			*remote = &body.PrincipalRole
+			(*creates)++
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(*remote)
+		case r.URL.Path == principalRoleTestItemPath && r.Method == http.MethodPut:
+			var body struct {
+				CurrentEntityVersion int64             `json:"currentEntityVersion"`
+				Properties           map[string]string `json:"properties"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode update: %v", err)
+			}
+			if *remote == nil || body.CurrentEntityVersion != (*remote).EntityVersion {
+				http.Error(w, "version conflict", http.StatusConflict)
+				return
+			}
+			(*remote).Properties = body.Properties
+			(*remote).EntityVersion++
+			(*updates)++
+			_ = json.NewEncoder(w).Encode(*remote)
+		case r.URL.Path == principalRoleTestItemPath && r.Method == http.MethodDelete:
+			*remote = nil
+			(*deletes)++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected", http.StatusBadRequest)
+		}
+	}))
+}
+func testPrincipalRoleFederatedMismatch(
+	t *testing.T,
+	ctx context.Context,
+	k8sClient client.Client,
+	reconciler *PolarisPrincipalRoleReconciler,
+	request reconcile.Request,
+	stored *polarisv1alpha1.PolarisPrincipalRole,
+	remote *polarisclient.PrincipalRole,
+	updates int,
+) {
 	stored.Spec.Federated = true
 	if err := k8sClient.Update(ctx, stored); err != nil {
 		t.Fatal(err)
@@ -162,7 +203,7 @@ func TestPolarisPrincipalRoleLifecycle(t *testing.T) {
 	}
 	readyFalse := false
 	for _, condition := range stored.Status.Conditions {
-		if condition.Type == "Ready" && condition.Status == metav1.ConditionFalse {
+		if condition.Type == readyConditionType && condition.Status == metav1.ConditionFalse {
 			readyFalse = true
 		}
 	}
@@ -175,18 +216,5 @@ func TestPolarisPrincipalRoleLifecycle(t *testing.T) {
 	}
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("restore federated field reconcile: %v", err)
-	}
-
-	if err := k8sClient.Get(ctx, request.NamespacedName, stored); err != nil {
-		t.Fatal(err)
-	}
-	if err := k8sClient.Delete(ctx, stored); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reconciler.Reconcile(ctx, request); err != nil {
-		t.Fatalf("delete reconcile: %v", err)
-	}
-	if deletes != 1 || remote != nil {
-		t.Fatalf("remote delete not performed: deletes=%d remote=%#v", deletes, remote)
 	}
 }

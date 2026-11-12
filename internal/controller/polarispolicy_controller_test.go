@@ -36,9 +36,15 @@ import (
 )
 
 func TestPolarisPolicyLifecycleAndDeleteOrdering(t *testing.T) {
+	const (
+		policyName     = "retention"
+		policyType     = "system.retention"
+		detachAllValue = "true"
+		targetType     = "table-like"
+	)
 	ctx := context.Background()
 	const collectionPath = "/api/catalog/polaris/v1/warehouse/namespaces/db%1Fschema/policies"
-	const policyPath = collectionPath + "/retention"
+	const policyPath = collectionPath + "/" + policyName
 	var created, deleted bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		expectedPath := policyPath
@@ -56,13 +62,13 @@ func TestPolarisPolicyLifecycleAndDeleteOrdering(t *testing.T) {
 			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 				t.Errorf("decode create body: %v", err)
 			}
-			if body["name"] != "retention" || body["type"] != "system.retention" {
+			if body["name"] != policyName || body["type"] != policyType {
 				t.Errorf("create body = %#v", body)
 			}
 			created = true
-			_, _ = w.Write([]byte(`{"policy":{"policy-type":"system.retention","inheritable":false,"name":"retention","description":"keep records","content":"{}","version":0}}`))
+			_, _ = w.Write([]byte(`{"policy":{"policy-type":"` + policyType + `","inheritable":false,"name":"` + policyName + `","description":"keep records","content":"{}","version":0}}`))
 		case http.MethodDelete:
-			if req.URL.Query().Get("detach-all") != "true" {
+			if req.URL.Query().Get("detach-all") != detachAllValue {
 				t.Errorf("delete query = %q", req.URL.RawQuery)
 			}
 			deleted = true
@@ -81,31 +87,31 @@ func TestPolarisPolicyLifecycleAndDeleteOrdering(t *testing.T) {
 	if err := polarisv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	ready := metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", Message: "ready", LastTransitionTime: metav1.Now()}
+	ready := metav1.Condition{Type: readyConditionType, Status: metav1.ConditionTrue, Reason: readyConditionType, Message: catalogRoleBindingTestReadyMessage, LastTransitionTime: metav1.Now()}
 	connection := &polarisv1alpha1.PolarisConnection{
-		ObjectMeta: metav1.ObjectMeta{Name: "remote", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: testRemoteConnectionName, Namespace: testDefaultNamespace},
 		Spec: polarisv1alpha1.PolarisConnectionSpec{
 			ManagementURL: server.URL + "/api/management/v1",
 			CatalogURL:    server.URL + "/api/catalog",
 			Auth: polarisv1alpha1.PolarisConnectionAuth{BearerTokenSecretRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "auth"}, Key: "token",
+				LocalObjectReference: corev1.LocalObjectReference{Name: testAuthSecretName}, Key: testTokenKey,
 			}},
 		},
 	}
 	catalog := &polarisv1alpha1.PolarisCatalog{
-		ObjectMeta: metav1.ObjectMeta{Name: "warehouse-resource", Namespace: "default"},
-		Spec:       polarisv1alpha1.PolarisCatalogSpec{ConnectionRef: "remote", CatalogName: "warehouse"},
+		ObjectMeta: metav1.ObjectMeta{Name: testWarehouseCatalogResourceName, Namespace: testDefaultNamespace},
+		Spec:       polarisv1alpha1.PolarisCatalogSpec{ConnectionRef: testRemoteConnectionName, CatalogName: testWarehouseCatalogName},
 		Status:     polarisv1alpha1.PolarisCatalogStatus{Conditions: []metav1.Condition{ready}},
 	}
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"},
-		Data:       map[string][]byte{"token": []byte("test-token")},
+		ObjectMeta: metav1.ObjectMeta{Name: testAuthSecretName, Namespace: testDefaultNamespace},
+		Data:       map[string][]byte{testTokenKey: []byte("test-token")},
 	}
 	policy := &polarisv1alpha1.PolarisPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: "retention", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: policyName, Namespace: testDefaultNamespace},
 		Spec: polarisv1alpha1.PolarisPolicySpec{
-			CatalogRef: catalog.Name, Namespace: []string{"db", "schema"}, PolicyName: "retention",
-			Type: "system.retention", Description: "keep records", Content: "{}", DetachAllOnDelete: true,
+			CatalogRef: catalog.Name, Namespace: []string{"db", catalogRoleGrantTestSchema}, PolicyName: policyName,
+			Type: policyType, Description: "keep records", Content: "{}", DetachAllOnDelete: true,
 		},
 	}
 	kubeClient := fake.NewClientBuilder().WithScheme(scheme).
@@ -123,13 +129,13 @@ func TestPolarisPolicyLifecycleAndDeleteOrdering(t *testing.T) {
 	if err := kubeClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
-	if !created || !meta.IsStatusConditionTrue(stored.Status.Conditions, "Ready") || stored.Status.PolicyVersion != 0 {
+	if !created || !meta.IsStatusConditionTrue(stored.Status.Conditions, readyConditionType) || stored.Status.PolicyVersion != 0 {
 		t.Fatalf("policy create state: created=%t status=%#v", created, stored.Status)
 	}
 
 	binding := &polarisv1alpha1.PolarisPolicyBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "retention-on-events", Namespace: policy.Namespace},
-		Spec:       polarisv1alpha1.PolarisPolicyBindingSpec{PolicyRef: policy.Name, TargetType: "table-like", Namespace: []string{"db", "schema"}, TargetName: "events"},
+		Spec:       polarisv1alpha1.PolarisPolicyBindingSpec{PolicyRef: policy.Name, TargetType: targetType, Namespace: []string{"db", catalogRoleGrantTestSchema}, TargetName: testEventsTableName},
 	}
 	if err := kubeClient.Create(ctx, binding); err != nil {
 		t.Fatal(err)
@@ -156,9 +162,11 @@ func TestPolarisPolicyLifecycleAndDeleteOrdering(t *testing.T) {
 
 func TestPolarisPolicyUpdateRetriesWithFreshVersion(t *testing.T) {
 	ctx := context.Background()
-	const policyPath = "/api/catalog/polaris/v1/warehouse/namespaces/db/policies/retention-policy"
 	var getCalls int
 	var updateVersions []int
+	const policyName = "retention-policy"
+	const policyType = "system.retention"
+	const policyPath = "/api/catalog/polaris/v1/warehouse/namespaces/db/policies/" + policyName
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.URL.EscapedPath() != policyPath {
 			t.Errorf("request path = %q", req.URL.EscapedPath())
@@ -170,10 +178,9 @@ func TestPolarisPolicyUpdateRetriesWithFreshVersion(t *testing.T) {
 			if getCalls > 1 {
 				version = 5
 			}
-			_, _ = w.Write([]byte(fmt.Sprintf(
-				`{"policy":{"policy-type":"system.retention","inheritable":false,"name":"retention-policy","description":"old","content":"{}","version":%d}}`,
-				version,
-			)))
+			if _, err := fmt.Fprintf(w, `{"policy":{"policy-type":"`+policyType+`","inheritable":false,"name":"`+policyName+`","description":"old","content":"{}","version":%d}}`, version); err != nil {
+				t.Errorf("write policy response: %v", err)
+			}
 		case http.MethodPut:
 			var body map[string]any
 			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
@@ -188,7 +195,7 @@ func TestPolarisPolicyUpdateRetriesWithFreshVersion(t *testing.T) {
 				w.WriteHeader(http.StatusConflict)
 				return
 			}
-			_, _ = w.Write([]byte(`{"policy":{"policy-type":"system.retention","inheritable":false,"name":"retention-policy","description":"new","content":"{\"days\":30}","version":6}}`))
+			_, _ = w.Write([]byte(`{"policy":{"policy-type":"` + policyType + `","inheritable":false,"name":"` + policyName + `","description":"new","content":"{\"days\":30}","version":6}}`))
 		default:
 			t.Errorf("unexpected request %s %s", req.Method, req.URL.RequestURI())
 			http.Error(w, "unexpected", http.StatusBadRequest)
@@ -203,39 +210,39 @@ func TestPolarisPolicyUpdateRetriesWithFreshVersion(t *testing.T) {
 	if err := polarisv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	ready := metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", Message: "ready", LastTransitionTime: metav1.Now()}
+	ready := metav1.Condition{Type: readyConditionType, Status: metav1.ConditionTrue, Reason: readyConditionType, Message: catalogRoleBindingTestReadyMessage, LastTransitionTime: metav1.Now()}
 	connection := &polarisv1alpha1.PolarisConnection{
-		ObjectMeta: metav1.ObjectMeta{Name: "remote", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: testRemoteConnectionName, Namespace: testDefaultNamespace},
 		Spec: polarisv1alpha1.PolarisConnectionSpec{
 			ManagementURL: server.URL + "/api/management/v1",
 			CatalogURL:    server.URL + "/api/catalog",
 			Auth: polarisv1alpha1.PolarisConnectionAuth{BearerTokenSecretRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "auth"}, Key: "token",
+				LocalObjectReference: corev1.LocalObjectReference{Name: testAuthSecretName}, Key: testTokenKey,
 			}},
 		},
 	}
 	catalog := &polarisv1alpha1.PolarisCatalog{
-		ObjectMeta: metav1.ObjectMeta{Name: "warehouse-resource", Namespace: "default"},
-		Spec:       polarisv1alpha1.PolarisCatalogSpec{ConnectionRef: "remote", CatalogName: "warehouse"},
+		ObjectMeta: metav1.ObjectMeta{Name: testWarehouseCatalogResourceName, Namespace: testDefaultNamespace},
+		Spec:       polarisv1alpha1.PolarisCatalogSpec{ConnectionRef: testRemoteConnectionName, CatalogName: testWarehouseCatalogName},
 		Status:     polarisv1alpha1.PolarisCatalogStatus{Conditions: []metav1.Condition{ready}},
 	}
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"},
-		Data:       map[string][]byte{"token": []byte("test-token")},
+		ObjectMeta: metav1.ObjectMeta{Name: testAuthSecretName, Namespace: testDefaultNamespace},
+		Data:       map[string][]byte{testTokenKey: []byte("test-token")},
 	}
 	policy := &polarisv1alpha1.PolarisPolicy{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "retention-policy", Namespace: "default", Generation: 2,
+			Name: policyName, Namespace: testDefaultNamespace, Generation: 2,
 			Finalizers: []string{polarisPolicyFinalizer},
 		},
 		Spec: polarisv1alpha1.PolarisPolicySpec{
-			CatalogRef: catalog.Name, Namespace: []string{"db"}, PolicyName: "retention-policy",
-			Type: "system.retention", Description: "new", Content: `{"days":30}`,
+			CatalogRef: catalog.Name, Namespace: []string{"db"}, PolicyName: policyName,
+			Type: policyType, Description: "new", Content: `{"days":30}`,
 		},
 		Status: polarisv1alpha1.PolarisPolicyStatus{
 			Conditions: []metav1.Condition{ready}, ObservedCatalogRef: catalog.Name,
-			ObservedCatalogName: "warehouse", ObservedConnectionRef: "remote",
-			ObservedNamespace: []string{"db"}, ObservedPolicyName: "retention-policy", ObservedType: "system.retention",
+			ObservedCatalogName: testWarehouseCatalogName, ObservedConnectionRef: testRemoteConnectionName,
+			ObservedNamespace: []string{"db"}, ObservedPolicyName: policyName, ObservedType: policyType,
 		},
 	}
 	kubeClient := fake.NewClientBuilder().WithScheme(scheme).
@@ -256,7 +263,7 @@ func TestPolarisPolicyUpdateRetriesWithFreshVersion(t *testing.T) {
 	if !reflect.DeepEqual(updateVersions, []int{4, 5}) {
 		t.Fatalf("update versions = %v, want [4 5]", updateVersions)
 	}
-	if stored.Status.PolicyVersion != 6 || !meta.IsStatusConditionTrue(stored.Status.Conditions, "Ready") {
+	if stored.Status.PolicyVersion != 6 || !meta.IsStatusConditionTrue(stored.Status.Conditions, readyConditionType) {
 		t.Fatalf("policy status after version retry = %#v", stored.Status)
 	}
 }

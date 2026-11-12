@@ -33,6 +33,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+const principalRoleBindingTestAssignedRole = "readers"
+
 func TestPolarisPrincipalRoleBindingLifecycle(t *testing.T) {
 	ctx := context.Background()
 	var assigned []polarisclient.PrincipalRole
@@ -51,13 +53,13 @@ func TestPolarisPrincipalRoleBindingLifecycle(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode assignment: %v", err)
 			}
-			if body.PrincipalRole.Name != "readers" {
+			if body.PrincipalRole.Name != principalRoleBindingTestAssignedRole {
 				t.Errorf("assigned role = %q", body.PrincipalRole.Name)
 			}
 			assigned = append(assigned, body.PrincipalRole)
 			assignCalls++
 			w.WriteHeader(http.StatusCreated)
-		case r.URL.Path == "/api/management/v1/principals/alice/principal-roles/readers" && r.Method == http.MethodDelete:
+		case r.URL.Path == "/api/management/v1/principals/alice/principal-roles/"+principalRoleBindingTestAssignedRole && r.Method == http.MethodDelete:
 			assigned = nil
 			revokeCalls++
 			w.WriteHeader(http.StatusNoContent)
@@ -76,22 +78,22 @@ func TestPolarisPrincipalRoleBindingLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	connection := &polarisv1alpha1.PolarisConnection{
-		ObjectMeta: metav1.ObjectMeta{Name: "remote", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: testRemoteConnectionName, Namespace: testDefaultNamespace},
 		Spec: polarisv1alpha1.PolarisConnectionSpec{
 			ManagementURL: server.URL + "/api/management/v1",
 			Auth: polarisv1alpha1.PolarisConnectionAuth{BearerTokenSecretRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "auth"}, Key: "token",
+				LocalObjectReference: corev1.LocalObjectReference{Name: testAuthSecretName}, Key: testTokenKey,
 			}},
 		},
 	}
-	authSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"}, Data: map[string][]byte{"token": []byte("test-token")}}
+	authSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: testAuthSecretName, Namespace: testDefaultNamespace}, Data: map[string][]byte{testTokenKey: []byte("test-token")}}
 	principal := &polarisv1alpha1.PolarisPrincipal{
-		ObjectMeta: metav1.ObjectMeta{Name: "alice-resource", Namespace: "default"},
-		Spec:       polarisv1alpha1.PolarisPrincipalSpec{ConnectionRef: "remote", PrincipalName: "alice", CredentialsSecretName: "alice-auth"},
+		ObjectMeta: metav1.ObjectMeta{Name: "alice-resource", Namespace: testDefaultNamespace},
+		Spec:       polarisv1alpha1.PolarisPrincipalSpec{ConnectionRef: testRemoteConnectionName, PrincipalName: "alice", CredentialsSecretName: "alice-auth"},
 	}
 	role := &polarisv1alpha1.PolarisPrincipalRole{
-		ObjectMeta: metav1.ObjectMeta{Name: "readers-resource", Namespace: "default"},
-		Spec:       polarisv1alpha1.PolarisPrincipalRoleSpec{ConnectionRef: "remote", RoleName: "readers"},
+		ObjectMeta: metav1.ObjectMeta{Name: "readers-resource", Namespace: testDefaultNamespace},
+		Spec:       polarisv1alpha1.PolarisPrincipalRoleSpec{ConnectionRef: testRemoteConnectionName, RoleName: principalRoleBindingTestAssignedRole},
 	}
 	binding := &polarisv1alpha1.PolarisPrincipalRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{Name: "alice-readers", Namespace: "default"},
@@ -108,7 +110,7 @@ func TestPolarisPrincipalRoleBindingLifecycle(t *testing.T) {
 			t.Fatalf("assignment reconcile: %v", err)
 		}
 	}
-	if assignCalls != 1 || len(assigned) != 1 || assigned[0].Name != "readers" {
+	if assignCalls != 1 || len(assigned) != 1 || assigned[0].Name != principalRoleBindingTestAssignedRole {
 		t.Fatalf("assignment calls=%d roles=%#v", assignCalls, assigned)
 	}
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
@@ -121,7 +123,7 @@ func TestPolarisPrincipalRoleBindingLifecycle(t *testing.T) {
 	if err := k8sClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
-	if stored.Status.ObservedPrincipalName != "alice" || stored.Status.ObservedPrincipalRoleName != "readers" {
+	if stored.Status.ObservedPrincipalName != "alice" || stored.Status.ObservedPrincipalRoleName != principalRoleBindingTestAssignedRole {
 		t.Fatalf("binding identity provenance missing: %#v", stored.Status)
 	}
 	if err := k8sClient.Delete(ctx, stored); err != nil {

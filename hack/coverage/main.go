@@ -18,7 +18,11 @@ func main() {
 	if err != nil {
 		fail("open coverage profile: %v", err)
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			fail("close coverage profile: %v", err)
+		}
+	}()
 
 	covered, total, err := parseProfile(file)
 	if err != nil {

@@ -39,7 +39,7 @@ import (
 
 const (
 	catalogRoleBindingFinalizer          = "polaris.apache.org/catalog-role-binding-cleanup"
-	catalogRoleBindingReadyConditionType = "Ready"
+	catalogRoleBindingReadyConditionType = readyConditionType
 	catalogRoleBindingRequeueAfter       = 30 * time.Second
 )
 
@@ -72,66 +72,16 @@ func (r *PolarisCatalogRoleBindingReconciler) Reconcile(ctx context.Context, req
 		if err := r.Update(ctx, binding); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	if binding.Status.ObservedPrincipalRoleName == "" {
-		if deleting {
-			controllerutil.RemoveFinalizer(binding, catalogRoleBindingFinalizer)
-			return ctrl.Result{}, r.Update(ctx, binding)
-		}
-		principalRole := &polarisv1alpha1.PolarisPrincipalRole{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Spec.PrincipalRoleRef}, principalRole); err != nil {
-			return r.catalogRoleBindingFailure(ctx, binding, "PrincipalRoleNotFound", errors.New("referenced PolarisPrincipalRole was not found"))
-		}
-		catalogRole := &polarisv1alpha1.PolarisCatalogRole{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Spec.CatalogRoleRef}, catalogRole); err != nil {
-			return r.catalogRoleBindingFailure(ctx, binding, "CatalogRoleNotFound", errors.New("referenced PolarisCatalogRole was not found"))
-		}
-		if !meta.IsStatusConditionTrue(principalRole.Status.Conditions, "Ready") ||
-			!meta.IsStatusConditionTrue(catalogRole.Status.Conditions, "Ready") {
-			return r.catalogRoleBindingFailure(ctx, binding, "RolesNotReady", errors.New("referenced Polaris roles must be Ready before assigning them"))
-		}
-		if principalRole.Spec.ConnectionRef != catalogRole.Status.ObservedConnectionRef {
-			return r.catalogRoleBindingFailure(ctx, binding, "ConnectionMismatch", errors.New("principal role and catalog role must use the same PolarisConnection"))
-		}
-		if catalogRole.Status.ObservedCatalogName == "" || catalogRole.Status.ObservedRoleName == "" {
-			return r.catalogRoleBindingFailure(ctx, binding, "CatalogIdentityUnknown", errors.New("catalog role has no recorded remote identity"))
-		}
-		binding.Status.ObservedPrincipalRoleRef = binding.Spec.PrincipalRoleRef
-		binding.Status.ObservedPrincipalRoleName = principalRole.Spec.RoleName
-		binding.Status.ObservedCatalogRoleRef = binding.Spec.CatalogRoleRef
-		binding.Status.ObservedCatalogName = catalogRole.Status.ObservedCatalogName
-		binding.Status.ObservedCatalogRoleName = catalogRole.Status.ObservedRoleName
-		binding.Status.ObservedConnectionRef = principalRole.Spec.ConnectionRef
-		if err := r.Status().Update(ctx, binding); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{Requeue: true}, nil
+		return r.initializeCatalogRoleBinding(ctx, binding, deleting)
 	}
 
 	if !deleting {
-		principalRole := &polarisv1alpha1.PolarisPrincipalRole{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Spec.PrincipalRoleRef}, principalRole); err != nil {
-			return r.catalogRoleBindingFailure(ctx, binding, "PrincipalRoleNotFound", errors.New("referenced PolarisPrincipalRole was not found"))
-		}
-		catalogRole := &polarisv1alpha1.PolarisCatalogRole{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Spec.CatalogRoleRef}, catalogRole); err != nil {
-			return r.catalogRoleBindingFailure(ctx, binding, "CatalogRoleNotFound", errors.New("referenced PolarisCatalogRole was not found"))
-		}
-		if !meta.IsStatusConditionTrue(principalRole.Status.Conditions, "Ready") ||
-			!meta.IsStatusConditionTrue(catalogRole.Status.Conditions, "Ready") {
-			return r.catalogRoleBindingFailure(ctx, binding, "RolesNotReady", errors.New("referenced Polaris roles must remain Ready"))
-		}
-		if binding.Spec.PrincipalRoleRef != binding.Status.ObservedPrincipalRoleRef ||
-			binding.Spec.CatalogRoleRef != binding.Status.ObservedCatalogRoleRef ||
-			principalRole.Spec.RoleName != binding.Status.ObservedPrincipalRoleName ||
-			principalRole.Spec.ConnectionRef != binding.Status.ObservedConnectionRef ||
-			catalogRole.Status.ObservedCatalogName != binding.Status.ObservedCatalogName ||
-			catalogRole.Status.ObservedRoleName != binding.Status.ObservedCatalogRoleName ||
-			catalogRole.Status.ObservedConnectionRef != binding.Status.ObservedConnectionRef {
-			return r.catalogRoleBindingFailure(ctx, binding, "IdentityChanged",
-				errors.New("referenced role identity changed; restore the recorded role, catalog, and connection to manage this assignment"))
+		if reason, cause := r.validateCatalogRoleBindingReferences(ctx, binding); cause != nil {
+			return r.catalogRoleBindingFailure(ctx, binding, reason, cause)
 		}
 	}
 
@@ -143,6 +93,7 @@ func (r *PolarisCatalogRoleBindingReconciler) Reconcile(ctx context.Context, req
 	if err != nil {
 		return r.catalogRoleBindingFailure(ctx, binding, "ConnectionUnavailable", err)
 	}
+
 	if deleting {
 		err := apiClient.RevokeCatalogRoleFromPrincipalRole(ctx, binding.Status.ObservedPrincipalRoleName,
 			binding.Status.ObservedCatalogName, binding.Status.ObservedCatalogRoleName)
@@ -184,6 +135,69 @@ func (r *PolarisCatalogRoleBindingReconciler) Reconcile(ctx context.Context, req
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: catalogRoleBindingRequeueAfter}, nil
+}
+
+func (r *PolarisCatalogRoleBindingReconciler) validateCatalogRoleBindingReferences(
+	ctx context.Context,
+	binding *polarisv1alpha1.PolarisCatalogRoleBinding,
+) (string, error) {
+	principalRole := &polarisv1alpha1.PolarisPrincipalRole{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Spec.PrincipalRoleRef}, principalRole); err != nil {
+		return "PrincipalRoleNotFound", errors.New("referenced PolarisPrincipalRole was not found")
+	}
+	catalogRole := &polarisv1alpha1.PolarisCatalogRole{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Spec.CatalogRoleRef}, catalogRole); err != nil {
+		return "CatalogRoleNotFound", errors.New("referenced PolarisCatalogRole was not found")
+	}
+	if !meta.IsStatusConditionTrue(principalRole.Status.Conditions, readyConditionType) ||
+		!meta.IsStatusConditionTrue(catalogRole.Status.Conditions, readyConditionType) {
+		return "RolesNotReady", errors.New("referenced Polaris roles must remain Ready")
+	}
+	if binding.Spec.PrincipalRoleRef != binding.Status.ObservedPrincipalRoleRef ||
+		binding.Spec.CatalogRoleRef != binding.Status.ObservedCatalogRoleRef ||
+		principalRole.Spec.RoleName != binding.Status.ObservedPrincipalRoleName ||
+		principalRole.Spec.ConnectionRef != binding.Status.ObservedConnectionRef ||
+		catalogRole.Status.ObservedCatalogName != binding.Status.ObservedCatalogName ||
+		catalogRole.Status.ObservedRoleName != binding.Status.ObservedCatalogRoleName ||
+		catalogRole.Status.ObservedConnectionRef != binding.Status.ObservedConnectionRef {
+		return "IdentityChanged", errors.New("referenced role identity changed; restore the recorded role, catalog, and connection to manage this assignment")
+	}
+	return "", nil
+}
+
+func (r *PolarisCatalogRoleBindingReconciler) initializeCatalogRoleBinding(ctx context.Context, binding *polarisv1alpha1.PolarisCatalogRoleBinding, deleting bool) (ctrl.Result, error) {
+	if deleting {
+		controllerutil.RemoveFinalizer(binding, catalogRoleBindingFinalizer)
+		return ctrl.Result{}, r.Update(ctx, binding)
+	}
+	principalRole := &polarisv1alpha1.PolarisPrincipalRole{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Spec.PrincipalRoleRef}, principalRole); err != nil {
+		return r.catalogRoleBindingFailure(ctx, binding, "PrincipalRoleNotFound", errors.New("referenced PolarisPrincipalRole was not found"))
+	}
+	catalogRole := &polarisv1alpha1.PolarisCatalogRole{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Spec.CatalogRoleRef}, catalogRole); err != nil {
+		return r.catalogRoleBindingFailure(ctx, binding, "CatalogRoleNotFound", errors.New("referenced PolarisCatalogRole was not found"))
+	}
+	if !meta.IsStatusConditionTrue(principalRole.Status.Conditions, readyConditionType) ||
+		!meta.IsStatusConditionTrue(catalogRole.Status.Conditions, readyConditionType) {
+		return r.catalogRoleBindingFailure(ctx, binding, "RolesNotReady", errors.New("referenced Polaris roles must be Ready before assigning them"))
+	}
+	if principalRole.Spec.ConnectionRef != catalogRole.Status.ObservedConnectionRef {
+		return r.catalogRoleBindingFailure(ctx, binding, "ConnectionMismatch", errors.New("principal role and catalog role must use the same PolarisConnection"))
+	}
+	if catalogRole.Status.ObservedCatalogName == "" || catalogRole.Status.ObservedRoleName == "" {
+		return r.catalogRoleBindingFailure(ctx, binding, "CatalogIdentityUnknown", errors.New("catalog role has no recorded remote identity"))
+	}
+	binding.Status.ObservedPrincipalRoleRef = binding.Spec.PrincipalRoleRef
+	binding.Status.ObservedPrincipalRoleName = principalRole.Spec.RoleName
+	binding.Status.ObservedCatalogRoleRef = binding.Spec.CatalogRoleRef
+	binding.Status.ObservedCatalogName = catalogRole.Status.ObservedCatalogName
+	binding.Status.ObservedCatalogRoleName = catalogRole.Status.ObservedRoleName
+	binding.Status.ObservedConnectionRef = principalRole.Spec.ConnectionRef
+	if err := r.Status().Update(ctx, binding); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: time.Second}, nil
 }
 
 func (r *PolarisCatalogRoleBindingReconciler) catalogRoleBindingFailure(ctx context.Context, binding *polarisv1alpha1.PolarisCatalogRoleBinding, reason string, cause error) (ctrl.Result, error) {

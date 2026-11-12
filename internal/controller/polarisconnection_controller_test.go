@@ -35,7 +35,7 @@ import (
 var _ = Describe("PolarisConnection Controller", func() {
 	It("marks a connection ready after checking management and catalog APIs", func() {
 		ctx := context.Background()
-		namespace := "default"
+		namespace := testDefaultNamespace
 		name := "test-connection"
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,13 +44,13 @@ var _ = Describe("PolarisConnection Controller", func() {
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"access_token":"test-token"}`))
 			case "/api/management/v1/catalogs":
-				if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+				if got := r.Header.Get("Authorization"); got != testBearerAuthorization {
 					http.Error(w, "unexpected authorization", http.StatusUnauthorized)
 					return
 				}
 				w.WriteHeader(http.StatusOK)
 			case "/api/catalog/v1/config":
-				if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+				if got := r.Header.Get("Authorization"); got != testBearerAuthorization {
 					http.Error(w, "unexpected authorization", http.StatusUnauthorized)
 					return
 				}
@@ -65,8 +65,8 @@ var _ = Describe("PolarisConnection Controller", func() {
 		secret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: "polaris-admin", Namespace: namespace},
 			Data: map[string][]byte{
-				"client-id":     []byte("client-id"),
-				"client-secret": []byte("client-secret"),
+				clientIDSecretKey:     []byte(clientIDSecretKey),
+				clientSecretSecretKey: []byte(clientSecretSecretKey),
 			},
 		}
 		Expect(k8sClient.Create(ctx, secret)).To(Succeed())

@@ -40,8 +40,9 @@ import (
 )
 
 const (
-	genericTableFinalizer    = "polaris.apache.org/generic-table-cleanup"
-	genericTableRequeueAfter = 30 * time.Second
+	genericTableFinalizer         = "polaris.apache.org/generic-table-cleanup"
+	genericTableRequeueAfter      = 30 * time.Second
+	genericTableUnsupportedReason = "Unsupported"
 )
 
 // PolarisGenericTableReconciler reconciles a PolarisGenericTable object.
@@ -75,14 +76,14 @@ func (r *PolarisGenericTableReconciler) Reconcile(ctx context.Context, req ctrl.
 			if err := r.Update(ctx, table); err != nil {
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
 	} else if controllerutil.ContainsFinalizer(table, genericTableFinalizer) {
 		controllerutil.RemoveFinalizer(table, genericTableFinalizer)
 		if err := r.Update(ctx, table); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	catalog := &polarisv1alpha1.PolarisCatalog{}
@@ -93,7 +94,7 @@ func (r *PolarisGenericTableReconciler) Reconcile(ctx context.Context, req ctrl.
 		}
 		return ctrl.Result{}, err
 	}
-	if !meta.IsStatusConditionTrue(catalog.Status.Conditions, "Ready") {
+	if !meta.IsStatusConditionTrue(catalog.Status.Conditions, catalogReadyConditionType) {
 		return r.genericTableFailure(ctx, table, "CatalogNotReady", errors.New("referenced PolarisCatalog is not Ready"), true)
 	}
 
@@ -109,10 +110,10 @@ func (r *PolarisGenericTableReconciler) Reconcile(ctx context.Context, req ctrl.
 		return r.genericTableFailure(ctx, table, "ConnectionNotReady", errors.New("referenced PolarisConnection is not Ready"), true)
 	}
 	if !connection.Spec.EnableBetaGenericTables {
-		return r.genericTableFailure(ctx, table, "BetaFeatureDisabled", errors.New("Polaris Generic Table API is beta and must be explicitly enabled on PolarisConnection.spec.enableBetaGenericTables"), false)
+		return r.genericTableFailure(ctx, table, "BetaFeatureDisabled", errors.New("polaris Generic Table API is beta and must be explicitly enabled on PolarisConnection.spec.enableBetaGenericTables"), false)
 	}
 	if connection.Status.CatalogURL == "" {
-		return r.genericTableFailure(ctx, table, "Unsupported", polarisclient.ErrUnsupported, false)
+		return r.genericTableFailure(ctx, table, genericTableUnsupportedReason, polarisclient.ErrUnsupported, false)
 	}
 
 	connectionReconciler := &PolarisConnectionReconciler{Client: r.Client}
@@ -128,34 +129,48 @@ func (r *PolarisGenericTableReconciler) Reconcile(ctx context.Context, req ctrl.
 		return r.genericTableFailure(ctx, table, "IdentityChanged", errors.New("catalog and generic-table identity cannot change after adoption or enforcement"), false)
 	}
 
-	remote, err := genericTables.GetTable(ctx, catalog.Spec.CatalogName, table.Spec.Namespace, table.Spec.TableName)
+	remote, reason, err := r.reconcileGenericTableRemote(ctx, genericTables, catalog.Spec.CatalogName, table, mode)
+	if err != nil {
+		return r.genericTableFailure(ctx, table, reason, err, reason != genericTableUnsupportedReason)
+	}
+	drifted := genericTableDrift(table.Spec, remote)
+	return r.genericTableSuccess(ctx, table, catalog.Spec.CatalogName, remote, drifted)
+}
+
+func (r *PolarisGenericTableReconciler) reconcileGenericTableRemote(
+	ctx context.Context,
+	genericTables *polarisclient.GenericTableClient,
+	catalogName string,
+	table *polarisv1alpha1.PolarisGenericTable,
+	mode polarisv1alpha1.PolarisOwnershipMode,
+) (polarisclient.GenericTable, string, error) {
+
+	remote, err := genericTables.GetTable(ctx, catalogName, table.Spec.Namespace, table.Spec.TableName)
 	if isHTTPStatus(err, http.StatusNotFound) {
 		if mode != polarisv1alpha1.PolarisOwnershipEnforce {
-			return r.genericTableFailure(ctx, table, "RemoteTableNotFound", errors.New("generic table is absent in Polaris and ownershipMode does not permit creation"), true)
+			return polarisclient.GenericTable{}, "RemoteTableNotFound", errors.New("generic table is absent in Polaris and ownershipMode does not permit creation")
 		}
-		remote, err = genericTables.CreateTable(ctx, catalog.Spec.CatalogName, table.Spec.Namespace, polarisclient.GenericTable{
+		remote, err = genericTables.CreateTable(ctx, catalogName, table.Spec.Namespace, polarisclient.GenericTable{
 			Name: table.Spec.TableName, Format: table.Spec.Format, BaseLocation: table.Spec.BaseLocation,
 			Doc: table.Spec.Doc, Properties: table.Spec.Properties,
 		})
 		if isHTTPStatus(err, http.StatusConflict) {
-			remote, err = genericTables.GetTable(ctx, catalog.Spec.CatalogName, table.Spec.Namespace, table.Spec.TableName)
+			remote, err = genericTables.GetTable(ctx, catalogName, table.Spec.Namespace, table.Spec.TableName)
 		}
 		if err != nil {
-			return r.genericTableFailure(ctx, table, "TableCreateFailed", err, true)
+			return polarisclient.GenericTable{}, "TableCreateFailed", err
 		}
 	} else if err != nil {
 		reason := "TableReadFailed"
 		if errors.Is(err, polarisclient.ErrUnsupported) {
-			reason = "Unsupported"
+			reason = genericTableUnsupportedReason
 		}
-		return r.genericTableFailure(ctx, table, reason, err, reason != "Unsupported")
+		return polarisclient.GenericTable{}, reason, err
 	}
 	if remote.Name != table.Spec.TableName {
-		return r.genericTableFailure(ctx, table, "RemoteIdentityMismatch", errors.New("Polaris returned a different generic-table name"), false)
+		return polarisclient.GenericTable{}, "RemoteIdentityMismatch", errors.New("polaris returned a different generic-table name")
 	}
-
-	drifted := genericTableDrift(table.Spec, remote)
-	return r.genericTableSuccess(ctx, table, catalog.Spec.CatalogName, remote, drifted)
+	return remote, "", nil
 }
 
 func (r *PolarisGenericTableReconciler) reconcileGenericTableDelete(
@@ -182,11 +197,11 @@ func (r *PolarisGenericTableReconciler) reconcileGenericTableDelete(
 			}
 			return ctrl.Result{}, err
 		}
-		if !meta.IsStatusConditionTrue(catalog.Status.Conditions, "Ready") || !meta.IsStatusConditionTrue(connection.Status.Conditions, polarisv1alpha1.PolarisConnectionReadyConditionType) {
+		if !meta.IsStatusConditionTrue(catalog.Status.Conditions, catalogReadyConditionType) || !meta.IsStatusConditionTrue(connection.Status.Conditions, polarisv1alpha1.PolarisConnectionReadyConditionType) {
 			return r.genericTableFailure(ctx, table, "ConnectionNotReady", errors.New("catalog or connection is not Ready during finalization"), true)
 		}
 		if connection.Status.CatalogURL == "" {
-			return r.genericTableFailure(ctx, table, "Unsupported", polarisclient.ErrUnsupported, false)
+			return r.genericTableFailure(ctx, table, genericTableUnsupportedReason, polarisclient.ErrUnsupported, false)
 		}
 		connectionReconciler := &PolarisConnectionReconciler{Client: r.Client}
 		apiClient, err := connectionReconciler.newClient(ctx, connection)
@@ -197,9 +212,9 @@ func (r *PolarisGenericTableReconciler) reconcileGenericTableDelete(
 		if err != nil && !isHTTPStatus(err, http.StatusNotFound) {
 			reason := "TableDeleteFailed"
 			if errors.Is(err, polarisclient.ErrUnsupported) {
-				reason = "Unsupported"
+				reason = genericTableUnsupportedReason
 			}
-			return r.genericTableFailure(ctx, table, reason, err, reason != "Unsupported")
+			return r.genericTableFailure(ctx, table, reason, err, reason != genericTableUnsupportedReason)
 		}
 	}
 	controllerutil.RemoveFinalizer(table, genericTableFinalizer)
@@ -267,15 +282,15 @@ func (r *PolarisGenericTableReconciler) genericTableSuccess(
 	table.Status.DriftedFields = slices.Clone(drifted)
 	table.Status.LastReconciledTime = &now
 	meta.SetStatusCondition(&table.Status.Conditions, metav1.Condition{
-		Type: "Ready", Status: metav1.ConditionTrue, ObservedGeneration: table.Generation,
+		Type: readyConditionType, Status: metav1.ConditionTrue, ObservedGeneration: table.Generation,
 		LastTransitionTime: now, Reason: "TableObserved", Message: "Polaris generic table was reconciled",
 	})
-	driftStatus, driftReason, driftMessage := metav1.ConditionFalse, "NoDrift", "Polaris generic table matches desired fields"
+	driftStatus, driftReason, driftMessage := metav1.ConditionFalse, noDriftReason, "Polaris generic table matches desired fields"
 	if len(drifted) > 0 {
-		driftStatus, driftReason, driftMessage = metav1.ConditionTrue, "DriftDetected", fmt.Sprintf("Polaris generic table differs in %v", drifted)
+		driftStatus, driftReason, driftMessage = metav1.ConditionTrue, driftDetectedReason, fmt.Sprintf("Polaris generic table differs in %v", drifted)
 	}
 	meta.SetStatusCondition(&table.Status.Conditions, metav1.Condition{
-		Type: "Drifted", Status: driftStatus, ObservedGeneration: table.Generation,
+		Type: driftedConditionType, Status: driftStatus, ObservedGeneration: table.Generation,
 		LastTransitionTime: now, Reason: driftReason, Message: driftMessage,
 	})
 	if err := r.Status().Update(ctx, table); err != nil {
@@ -292,7 +307,7 @@ func (r *PolarisGenericTableReconciler) genericTableFailure(
 	requeue bool,
 ) (ctrl.Result, error) {
 	meta.SetStatusCondition(&table.Status.Conditions, metav1.Condition{
-		Type: "Ready", Status: metav1.ConditionFalse, ObservedGeneration: table.Generation,
+		Type: readyConditionType, Status: metav1.ConditionFalse, ObservedGeneration: table.Generation,
 		LastTransitionTime: metav1.Now(), Reason: reason, Message: sanitizeErrorMessage(cause),
 	})
 	table.Status.ObservedGeneration = table.Generation

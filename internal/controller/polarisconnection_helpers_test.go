@@ -30,16 +30,26 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+const (
+	connectionTestOAuth                 = "OAUTH"
+	connectionTestBearer                = "BEARER"
+	connectionTestRemoteUnavailable     = "RemoteUnavailable"
+	connectionTestCredentialsSecretName = "credentials"
+	connectionTestNamespace             = "team-a"
+	connectionTestOtherNamespace        = "team-b"
+	connectionTestCABundleSecretName    = "polaris-ca"
+)
+
 func TestConnectionSecretReferences(t *testing.T) {
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "credentials", Namespace: "team-a"}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: connectionTestCredentialsSecretName, Namespace: connectionTestNamespace}}
 	credentialAuth := polarisv1alpha1.PolarisConnectionAuth{
-		ClientCredentials: &polarisv1alpha1.PolarisClientCredentials{SecretRef: corev1.LocalObjectReference{Name: "credentials"}},
+		ClientCredentials: &polarisv1alpha1.PolarisClientCredentials{SecretRef: corev1.LocalObjectReference{Name: connectionTestCredentialsSecretName}},
 	}
 	bearerAuth := polarisv1alpha1.PolarisConnectionAuth{
-		BearerTokenSecretRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "credentials"}, Key: "token"},
+		BearerTokenSecretRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: connectionTestCredentialsSecretName}, Key: testTokenKey},
 	}
 	caTLS := &polarisv1alpha1.PolarisTLSConfig{
-		CASecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "credentials"}, Key: "ca.crt"},
+		CASecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: connectionTestCredentialsSecretName}, Key: "ca.crt"},
 	}
 
 	tests := []struct {
@@ -51,7 +61,7 @@ func TestConnectionSecretReferences(t *testing.T) {
 		{
 			name: "client credentials in the connection namespace",
 			connection: &polarisv1alpha1.PolarisConnection{
-				ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"}, Spec: polarisv1alpha1.PolarisConnectionSpec{Auth: credentialAuth},
+				ObjectMeta: metav1.ObjectMeta{Namespace: connectionTestNamespace}, Spec: polarisv1alpha1.PolarisConnectionSpec{Auth: credentialAuth},
 			},
 			secret: secret,
 			want:   true,
@@ -59,7 +69,7 @@ func TestConnectionSecretReferences(t *testing.T) {
 		{
 			name: "bearer token in the connection namespace",
 			connection: &polarisv1alpha1.PolarisConnection{
-				ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"}, Spec: polarisv1alpha1.PolarisConnectionSpec{Auth: bearerAuth},
+				ObjectMeta: metav1.ObjectMeta{Namespace: connectionTestNamespace}, Spec: polarisv1alpha1.PolarisConnectionSpec{Auth: bearerAuth},
 			},
 			secret: secret,
 			want:   true,
@@ -67,7 +77,7 @@ func TestConnectionSecretReferences(t *testing.T) {
 		{
 			name: "CA bundle in the connection namespace",
 			connection: &polarisv1alpha1.PolarisConnection{
-				ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"}, Spec: polarisv1alpha1.PolarisConnectionSpec{TLS: caTLS},
+				ObjectMeta: metav1.ObjectMeta{Namespace: connectionTestNamespace}, Spec: polarisv1alpha1.PolarisConnectionSpec{TLS: caTLS},
 			},
 			secret: secret,
 			want:   true,
@@ -75,16 +85,16 @@ func TestConnectionSecretReferences(t *testing.T) {
 		{
 			name: "unreferenced Secret",
 			connection: &polarisv1alpha1.PolarisConnection{
-				ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"}, Spec: polarisv1alpha1.PolarisConnectionSpec{Auth: bearerAuth},
+				ObjectMeta: metav1.ObjectMeta{Namespace: connectionTestNamespace}, Spec: polarisv1alpha1.PolarisConnectionSpec{Auth: bearerAuth},
 			},
-			secret: &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "team-a"}},
+			secret: &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: connectionTestNamespace}},
 		},
 		{
 			name: "same Secret name in another namespace",
 			connection: &polarisv1alpha1.PolarisConnection{
-				ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"}, Spec: polarisv1alpha1.PolarisConnectionSpec{Auth: bearerAuth},
+				ObjectMeta: metav1.ObjectMeta{Namespace: connectionTestNamespace}, Spec: polarisv1alpha1.PolarisConnectionSpec{Auth: bearerAuth},
 			},
-			secret: &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "credentials", Namespace: "team-b"}},
+			secret: &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: connectionTestCredentialsSecretName, Namespace: connectionTestOtherNamespace}},
 		},
 	}
 
@@ -100,24 +110,24 @@ func TestConnectionSecretReferences(t *testing.T) {
 
 func TestCatalogSecretReferences(t *testing.T) {
 	oauth := &polarisv1alpha1.PolarisCatalog{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: connectionTestNamespace},
 		Spec: polarisv1alpha1.PolarisCatalogSpec{ExternalCatalog: &polarisv1alpha1.PolarisExternalCatalogConfig{
 			Authentication: polarisv1alpha1.PolarisExternalCatalogAuthentication{
-				Type: "OAUTH", ClientCredentials: &polarisv1alpha1.PolarisExternalCatalogClientCredentials{
-					SecretRef: corev1.LocalObjectReference{Name: "credentials"},
+				Type: connectionTestOAuth, ClientCredentials: &polarisv1alpha1.PolarisExternalCatalogClientCredentials{
+					SecretRef: corev1.LocalObjectReference{Name: connectionTestCredentialsSecretName},
 				},
 			},
 		}},
 	}
 	bearer := &polarisv1alpha1.PolarisCatalog{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: connectionTestNamespace},
 		Spec: polarisv1alpha1.PolarisCatalogSpec{ExternalCatalog: &polarisv1alpha1.PolarisExternalCatalogConfig{
 			Authentication: polarisv1alpha1.PolarisExternalCatalogAuthentication{
-				Type: "BEARER", BearerTokenSecretRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "credentials"}, Key: "token"},
+				Type: connectionTestBearer, BearerTokenSecretRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: connectionTestCredentialsSecretName}, Key: "token"},
 			},
 		}},
 	}
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "credentials", Namespace: "team-a"}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: connectionTestCredentialsSecretName, Namespace: connectionTestNamespace}}
 
 	tests := []struct {
 		name    string
@@ -127,9 +137,9 @@ func TestCatalogSecretReferences(t *testing.T) {
 	}{
 		{name: "OAuth client credentials", catalog: oauth, secret: secret, want: true},
 		{name: "bearer token", catalog: bearer, secret: secret, want: true},
-		{name: "different Secret", catalog: bearer, secret: &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "team-a"}}},
-		{name: "different namespace", catalog: bearer, secret: &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "credentials", Namespace: "team-b"}}},
-		{name: "internal catalog", catalog: &polarisv1alpha1.PolarisCatalog{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"}}, secret: secret},
+		{name: "different Secret", catalog: bearer, secret: &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: connectionTestNamespace}}},
+		{name: "different namespace", catalog: bearer, secret: &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: connectionTestCredentialsSecretName, Namespace: connectionTestOtherNamespace}}},
+		{name: "internal catalog", catalog: &polarisv1alpha1.PolarisCatalog{ObjectMeta: metav1.ObjectMeta{Namespace: connectionTestNamespace}}, secret: secret},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -146,19 +156,19 @@ func TestReadCABundleFromReferencedSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: "polaris-ca", Namespace: "team-a"},
+		ObjectMeta: metav1.ObjectMeta{Name: connectionTestCABundleSecretName, Namespace: connectionTestNamespace},
 		Data:       map[string][]byte{"bundle.pem": []byte("test CA bundle")},
 	}
 	kubeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(secret).Build()
 	reconciler := &PolarisConnectionReconciler{Client: kubeClient}
 
-	connection := &polarisv1alpha1.PolarisConnection{ObjectMeta: metav1.ObjectMeta{Namespace: "team-a"}}
+	connection := &polarisv1alpha1.PolarisConnection{ObjectMeta: metav1.ObjectMeta{Namespace: connectionTestNamespace}}
 	bundle, err := reconciler.readCABundle(context.Background(), connection)
 	if err != nil || bundle != nil {
 		t.Fatalf("readCABundle() without TLS = %q, %v", bundle, err)
 	}
 	connection.Spec.TLS = &polarisv1alpha1.PolarisTLSConfig{
-		CASecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "polaris-ca"}, Key: "bundle.pem"},
+		CASecretRef: corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: connectionTestCABundleSecretName}, Key: "bundle.pem"},
 	}
 	bundle, err = reconciler.readCABundle(context.Background(), connection)
 	if err != nil || string(bundle) != "test CA bundle" {
@@ -169,7 +179,7 @@ func TestReadCABundleFromReferencedSecret(t *testing.T) {
 	if _, err := reconciler.readCABundle(context.Background(), connection); err == nil {
 		t.Fatal("readCABundle() succeeded for a missing Secret")
 	}
-	connection.Spec.TLS.CASecretRef.Name = "polaris-ca"
+	connection.Spec.TLS.CASecretRef.Name = connectionTestCABundleSecretName
 	connection.Spec.TLS.CASecretRef.Key = "missing.pem"
 	if _, err := reconciler.readCABundle(context.Background(), connection); err == nil {
 		t.Fatal("readCABundle() succeeded for a missing CA key")
@@ -186,7 +196,7 @@ func TestConnectionFailureStatusIsRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	connection := &polarisv1alpha1.PolarisConnection{
-		ObjectMeta: metav1.ObjectMeta{Name: "polaris", Namespace: "team-a", Generation: 4},
+		ObjectMeta: metav1.ObjectMeta{Name: "polaris", Namespace: connectionTestNamespace, Generation: 4},
 	}
 	kubeClient := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(connection).
@@ -220,7 +230,7 @@ func TestConnectionFailureReasonClassifiesHTTPStatuses(t *testing.T) {
 		{name: "unauthorized", code: 401, want: "AuthenticationFailed"},
 		{name: "forbidden", code: 403, want: "AuthorizationFailed"},
 		{name: "bad request", code: 400, want: "InvalidRemoteRequest"},
-		{name: "server failure", code: 503, want: "RemoteUnavailable"},
+		{name: "server failure", code: 503, want: connectionTestRemoteUnavailable},
 		{name: "other response", code: 404, want: "InvalidConfigurationOrUnavailable"},
 	}
 	for _, tt := range tests {

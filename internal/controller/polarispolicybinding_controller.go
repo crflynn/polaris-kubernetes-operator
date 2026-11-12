@@ -21,6 +21,7 @@ import (
 	"errors"
 	"net/http"
 	"reflect"
+	"slices"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -73,68 +74,15 @@ func (r *PolarisPolicyBindingReconciler) Reconcile(ctx context.Context, req ctrl
 		if err := r.Update(ctx, binding); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	if binding.Status.ObservedPolicyName == "" {
-		if deleting {
-			controllerutil.RemoveFinalizer(binding, polarisPolicyBindingFinalizer)
-			return ctrl.Result{}, r.Update(ctx, binding)
-		}
-		if _, err := policyTarget(binding.Spec); err != nil {
-			return r.policyBindingFailure(ctx, binding, "InvalidTarget", err)
-		}
-		policy := &polarisv1alpha1.PolarisPolicy{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Spec.PolicyRef}, policy); err != nil {
-			return r.policyBindingFailure(ctx, binding, "PolicyNotFound", errors.New("referenced PolarisPolicy was not found"))
-		}
-		if !meta.IsStatusConditionTrue(policy.Status.Conditions, "Ready") || !policy.DeletionTimestamp.IsZero() {
-			return r.policyBindingFailure(ctx, binding, "PolicyNotReady", errors.New("referenced PolarisPolicy must be Ready and not deleting"))
-		}
-		if policy.Status.ObservedPolicyName == "" || policy.Status.ObservedCatalogName == "" || policy.Status.ObservedConnectionRef == "" {
-			return r.policyBindingFailure(ctx, binding, "PolicyIdentityUnknown", errors.New("referenced PolarisPolicy has no recorded remote identity"))
-		}
-		binding.Status.ObservedPolicyRef = binding.Spec.PolicyRef
-		binding.Status.ObservedCatalogRef = policy.Status.ObservedCatalogRef
-		binding.Status.ObservedCatalogName = policy.Status.ObservedCatalogName
-		binding.Status.ObservedConnectionRef = policy.Status.ObservedConnectionRef
-		binding.Status.ObservedNamespace = append([]string(nil), policy.Status.ObservedNamespace...)
-		binding.Status.ObservedPolicyName = policy.Status.ObservedPolicyName
-		binding.Status.ObservedTargetType = binding.Spec.TargetType
-		binding.Status.ObservedTargetNamespace = append([]string(nil), binding.Spec.Namespace...)
-		binding.Status.ObservedTargetName = binding.Spec.TargetName
-		if err := r.Status().Update(ctx, binding); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{Requeue: true}, nil
+	if result, handled, err := r.initializePolicyBinding(ctx, binding, deleting); handled {
+		return result, err
 	}
 
-	if !deleting {
-		if binding.Spec.PolicyRef != binding.Status.ObservedPolicyRef ||
-			binding.Spec.TargetType != binding.Status.ObservedTargetType ||
-			!reflect.DeepEqual(binding.Spec.Namespace, binding.Status.ObservedTargetNamespace) ||
-			binding.Spec.TargetName != binding.Status.ObservedTargetName {
-			return r.policyBindingFailure(ctx, binding, "IdentityChangeNotAllowed",
-				errors.New("policyRef and target identity cannot change after the remote mapping is recorded"))
-		}
-		policy := &polarisv1alpha1.PolarisPolicy{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Status.ObservedPolicyRef}, policy); err != nil {
-			return r.policyBindingFailure(ctx, binding, "PolicyNotFound", errors.New("recorded PolarisPolicy was not found"))
-		}
-		if !meta.IsStatusConditionTrue(policy.Status.Conditions, "Ready") || !policy.DeletionTimestamp.IsZero() {
-			return r.policyBindingFailure(ctx, binding, "PolicyNotReady", errors.New("referenced PolarisPolicy must remain Ready and not deleting"))
-		}
-		if policy.Status.ObservedCatalogRef != binding.Status.ObservedCatalogRef ||
-			policy.Status.ObservedCatalogName != binding.Status.ObservedCatalogName ||
-			policy.Status.ObservedConnectionRef != binding.Status.ObservedConnectionRef ||
-			policy.Status.ObservedPolicyName != binding.Status.ObservedPolicyName ||
-			!reflect.DeepEqual(policy.Status.ObservedNamespace, binding.Status.ObservedNamespace) {
-			return r.policyBindingFailure(ctx, binding, "PolicyIdentityChanged",
-				errors.New("referenced PolarisPolicy identity changed; restore the recorded catalog, namespace, policy, and connection"))
-		}
-		if binding.Status.ObservedGeneration == binding.Generation && meta.IsStatusConditionTrue(binding.Status.Conditions, "Ready") {
-			return ctrl.Result{}, nil
-		}
+	if result, handled, err := r.validateObservedPolicyBinding(ctx, binding, deleting); handled {
+		return result, err
 	}
 
 	connection := &polarisv1alpha1.PolarisConnection{}
@@ -154,6 +102,12 @@ func (r *PolarisPolicyBindingReconciler) Reconcile(ctx context.Context, req ctrl
 	}
 	if target.Type == "table-like" {
 		target.Path = append(target.Path, binding.Status.ObservedTargetName)
+	}
+	if !deleting {
+		target, err = policyTarget(binding.Spec)
+		if err != nil {
+			return r.policyBindingFailure(ctx, binding, "InvalidTarget", err)
+		}
 	}
 
 	if deleting {
@@ -195,7 +149,7 @@ func (r *PolarisPolicyBindingReconciler) Reconcile(ctx context.Context, req ctrl
 	binding.Status.ObservedGeneration = binding.Generation
 	binding.Status.LastReconciledTime = &now
 	meta.SetStatusCondition(&binding.Status.Conditions, metav1.Condition{
-		Type: "Ready", Status: metav1.ConditionTrue, ObservedGeneration: binding.Generation,
+		Type: readyConditionType, Status: metav1.ConditionTrue, ObservedGeneration: binding.Generation,
 		LastTransitionTime: now, Reason: "PolicyAttached", Message: "Polaris policy is attached to the target",
 	})
 	if err := r.Status().Update(ctx, binding); err != nil {
@@ -204,11 +158,97 @@ func (r *PolarisPolicyBindingReconciler) Reconcile(ctx context.Context, req ctrl
 	return ctrl.Result{}, nil
 }
 
+func (r *PolarisPolicyBindingReconciler) initializePolicyBinding(
+	ctx context.Context,
+	binding *polarisv1alpha1.PolarisPolicyBinding,
+	deleting bool,
+) (ctrl.Result, bool, error) {
+	if binding.Status.ObservedPolicyName != "" {
+		return ctrl.Result{}, false, nil
+	}
+	if deleting {
+		controllerutil.RemoveFinalizer(binding, polarisPolicyBindingFinalizer)
+		return ctrl.Result{}, true, r.Update(ctx, binding)
+	}
+	if err := policyTargetError(binding.Spec); err != nil {
+		result, failureErr := r.policyBindingFailure(ctx, binding, "InvalidTarget", err)
+		return result, true, failureErr
+	}
+	policy := &polarisv1alpha1.PolarisPolicy{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Spec.PolicyRef}, policy); err != nil {
+		result, failureErr := r.policyBindingFailure(ctx, binding, "PolicyNotFound", errors.New("referenced PolarisPolicy was not found"))
+		return result, true, failureErr
+	}
+	if !meta.IsStatusConditionTrue(policy.Status.Conditions, readyConditionType) || !policy.DeletionTimestamp.IsZero() {
+		result, failureErr := r.policyBindingFailure(ctx, binding, "PolicyNotReady", errors.New("referenced PolarisPolicy must be Ready and not deleting"))
+		return result, true, failureErr
+	}
+	if policy.Status.ObservedPolicyName == "" || policy.Status.ObservedCatalogName == "" || policy.Status.ObservedConnectionRef == "" {
+		result, failureErr := r.policyBindingFailure(ctx, binding, "PolicyIdentityUnknown", errors.New("referenced PolarisPolicy has no recorded remote identity"))
+		return result, true, failureErr
+	}
+	binding.Status.ObservedPolicyRef = binding.Spec.PolicyRef
+	binding.Status.ObservedCatalogRef = policy.Status.ObservedCatalogRef
+	binding.Status.ObservedCatalogName = policy.Status.ObservedCatalogName
+	binding.Status.ObservedConnectionRef = policy.Status.ObservedConnectionRef
+	binding.Status.ObservedNamespace = append([]string(nil), policy.Status.ObservedNamespace...)
+	binding.Status.ObservedPolicyName = policy.Status.ObservedPolicyName
+	binding.Status.ObservedTargetType = binding.Spec.TargetType
+	binding.Status.ObservedTargetNamespace = append([]string(nil), binding.Spec.Namespace...)
+	binding.Status.ObservedTargetName = binding.Spec.TargetName
+	if err := r.Status().Update(ctx, binding); err != nil {
+		return ctrl.Result{}, true, err
+	}
+	return ctrl.Result{RequeueAfter: time.Second}, true, nil
+}
+
+func (r *PolarisPolicyBindingReconciler) validateObservedPolicyBinding(
+	ctx context.Context,
+	binding *polarisv1alpha1.PolarisPolicyBinding,
+	deleting bool,
+) (ctrl.Result, bool, error) {
+	if deleting {
+		return ctrl.Result{}, false, nil
+	}
+	if binding.Spec.PolicyRef != binding.Status.ObservedPolicyRef ||
+		binding.Spec.TargetType != binding.Status.ObservedTargetType ||
+		!reflect.DeepEqual(binding.Spec.Namespace, binding.Status.ObservedTargetNamespace) ||
+		binding.Spec.TargetName != binding.Status.ObservedTargetName {
+		result, err := r.policyBindingFailure(ctx, binding, "IdentityChangeNotAllowed",
+			errors.New("policyRef and target identity cannot change after the remote mapping is recorded"))
+		return result, true, err
+	}
+	policy := &polarisv1alpha1.PolarisPolicy{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: binding.Namespace, Name: binding.Status.ObservedPolicyRef}, policy); err != nil {
+		result, failureErr := r.policyBindingFailure(ctx, binding, "PolicyNotFound", errors.New("recorded PolarisPolicy was not found"))
+		return result, true, failureErr
+	}
+	if !meta.IsStatusConditionTrue(policy.Status.Conditions, readyConditionType) || !policy.DeletionTimestamp.IsZero() {
+		result, failureErr := r.policyBindingFailure(ctx, binding, "PolicyNotReady", errors.New("referenced PolarisPolicy must remain Ready and not deleting"))
+		return result, true, failureErr
+	}
+	if policy.Status.ObservedCatalogRef != binding.Status.ObservedCatalogRef ||
+		policy.Status.ObservedCatalogName != binding.Status.ObservedCatalogName ||
+		policy.Status.ObservedConnectionRef != binding.Status.ObservedConnectionRef ||
+		policy.Status.ObservedPolicyName != binding.Status.ObservedPolicyName ||
+		!reflect.DeepEqual(policy.Status.ObservedNamespace, binding.Status.ObservedNamespace) {
+		result, err := r.policyBindingFailure(ctx, binding, "PolicyIdentityChanged",
+			errors.New("referenced PolarisPolicy identity changed; restore the recorded catalog, namespace, policy, and connection"))
+		return result, true, err
+	}
+	if binding.Status.ObservedGeneration == binding.Generation && meta.IsStatusConditionTrue(binding.Status.Conditions, readyConditionType) {
+		return ctrl.Result{}, true, nil
+	}
+	return ctrl.Result{}, false, nil
+}
+
+func policyTargetError(spec polarisv1alpha1.PolarisPolicyBindingSpec) error {
+	_, err := policyTarget(spec)
+	return err
+}
 func policyTarget(spec polarisv1alpha1.PolarisPolicyBindingSpec) (polarisclient.PolicyTarget, error) {
-	for _, part := range spec.Namespace {
-		if part == "" {
-			return polarisclient.PolicyTarget{}, errors.New("namespace path segments must not be empty")
-		}
+	if slices.Contains(spec.Namespace, "") {
+		return polarisclient.PolicyTarget{}, errors.New("namespace path segments must not be empty")
 	}
 	target := polarisclient.PolicyTarget{Type: spec.TargetType}
 	switch spec.TargetType {
@@ -235,7 +275,7 @@ func policyTarget(spec polarisv1alpha1.PolarisPolicyBindingSpec) (polarisclient.
 
 func (r *PolarisPolicyBindingReconciler) policyBindingFailure(ctx context.Context, binding *polarisv1alpha1.PolarisPolicyBinding, reason string, cause error) (ctrl.Result, error) {
 	meta.SetStatusCondition(&binding.Status.Conditions, metav1.Condition{
-		Type: "Ready", Status: metav1.ConditionFalse, ObservedGeneration: binding.Generation,
+		Type: readyConditionType, Status: metav1.ConditionFalse, ObservedGeneration: binding.Generation,
 		LastTransitionTime: metav1.Now(), Reason: reason, Message: cause.Error(),
 	})
 	if err := r.Status().Update(ctx, binding); err != nil {

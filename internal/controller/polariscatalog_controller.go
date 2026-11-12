@@ -50,6 +50,16 @@ const (
 	catalogRequeueAfter = 30 * time.Second
 )
 
+const (
+	readyConditionType        = "Ready"
+	catalogReadyConditionType = readyConditionType
+	driftedConditionType      = "Drifted"
+	noDriftReason             = "NoDrift"
+	driftDetectedReason       = "DriftDetected"
+	clientIDSecretKey         = "client-id"
+	clientSecretSecretKey     = "client-secret"
+)
+
 // PolarisCatalogReconciler reconciles a PolarisCatalog object.
 type PolarisCatalogReconciler struct {
 	client.Client
@@ -105,7 +115,7 @@ func (r *PolarisCatalogReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		if err := r.Update(ctx, catalog); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	var external *polarisclient.ExternalConnectionConfig
@@ -133,25 +143,7 @@ func (r *PolarisCatalogReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 		remote, err = apiClient.CreateCatalog(ctx, desiredCatalog(catalog, external))
 	} else if err == nil {
-		desired := desiredCatalog(catalog, external)
-		if remote.Type != desired.Type {
-			err = errors.New("existing Polaris catalog type cannot be changed")
-		} else if external != nil && (catalog.Status.AuthenticationSecretName == "" ||
-			catalog.Status.AuthenticationConfigurationHash == "") {
-			err = errors.New("external catalog already exists without recorded authentication Secret provenance; delete and recreate it")
-		} else if external != nil && (catalog.Status.AuthenticationSecretName != authSecretName ||
-			catalog.Status.AuthenticationSecretResourceVersion != authSecretVersion ||
-			catalog.Status.AuthenticationConfigurationHash != authConfigHash) {
-			err = errors.New("external catalog authentication Secret or reference changed; delete and recreate the catalog because Polaris does not support updating connection authentication")
-		} else if external != nil && !externalConnectionMatches(remote.ConnectionConfigInfo, external) {
-			err = errors.New("external catalog connection configuration cannot be updated; delete and recreate the catalog")
-		} else {
-			desired.EntityVersion = remote.EntityVersion
-			if !reflect.DeepEqual(remote.Properties, desired.Properties) ||
-				!reflect.DeepEqual(remote.StorageConfigInfo, desired.StorageConfigInfo) {
-				remote, err = apiClient.UpdateCatalog(ctx, desired)
-			}
-		}
+		remote, err = r.updateExistingCatalog(ctx, apiClient, catalog, external, authSecretName, authSecretVersion, authConfigHash, remote)
 	}
 	if err != nil {
 		return r.catalogFailure(ctx, catalog, "ReconcileFailed", err)
@@ -175,6 +167,38 @@ func (r *PolarisCatalogReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: catalogRequeueAfter}, nil
+}
+
+func (r *PolarisCatalogReconciler) updateExistingCatalog(
+	ctx context.Context,
+	apiClient *polarisclient.Client,
+	catalog *polarisv1alpha1.PolarisCatalog,
+	external *polarisclient.ExternalConnectionConfig,
+	authSecretName, authSecretVersion, authConfigHash string,
+	remote polarisclient.Catalog,
+) (polarisclient.Catalog, error) {
+	desired := desiredCatalog(catalog, external)
+	if remote.Type != desired.Type {
+		return remote, errors.New("existing Polaris catalog type cannot be changed")
+	}
+	if external != nil && (catalog.Status.AuthenticationSecretName == "" ||
+		catalog.Status.AuthenticationConfigurationHash == "") {
+		return remote, errors.New("external catalog already exists without recorded authentication Secret provenance; delete and recreate it")
+	}
+	if external != nil && (catalog.Status.AuthenticationSecretName != authSecretName ||
+		catalog.Status.AuthenticationSecretResourceVersion != authSecretVersion ||
+		catalog.Status.AuthenticationConfigurationHash != authConfigHash) {
+		return remote, errors.New("external catalog authentication Secret or reference changed; delete and recreate the catalog because Polaris does not support updating connection authentication")
+	}
+	if external != nil && !externalConnectionMatches(remote.ConnectionConfigInfo, external) {
+		return remote, errors.New("external catalog connection configuration cannot be updated; delete and recreate the catalog")
+	}
+	desired.EntityVersion = remote.EntityVersion
+	if !reflect.DeepEqual(remote.Properties, desired.Properties) ||
+		!reflect.DeepEqual(remote.StorageConfigInfo, desired.StorageConfigInfo) {
+		return apiClient.UpdateCatalog(ctx, desired)
+	}
+	return remote, nil
 }
 
 func desiredCatalog(catalog *polarisv1alpha1.PolarisCatalog, external *polarisclient.ExternalConnectionConfig) polarisclient.Catalog {
@@ -220,11 +244,11 @@ func (r *PolarisCatalogReconciler) externalConnectionConfig(ctx context.Context,
 		}
 		clientIDKey := credentials.ClientIDKey
 		if clientIDKey == "" {
-			clientIDKey = "client-id"
+			clientIDKey = clientIDSecretKey
 		}
 		clientSecretKey := credentials.ClientSecretKey
 		if clientSecretKey == "" {
-			clientSecretKey = "client-secret"
+			clientSecretKey = clientSecretSecretKey
 		}
 		auth.TokenURI = credentials.TokenURL
 		auth.ClientID, err = secretValue(secret, clientIDKey)
@@ -309,7 +333,7 @@ func (r *PolarisCatalogReconciler) catalogFailure(ctx context.Context, catalog *
 
 func metaSetCatalogReady(catalog *polarisv1alpha1.PolarisCatalog, status metav1.ConditionStatus, reason, message string) {
 	meta.SetStatusCondition(&catalog.Status.Conditions, metav1.Condition{
-		Type: "Ready", Status: status, ObservedGeneration: catalog.Generation,
+		Type: catalogReadyConditionType, Status: status, ObservedGeneration: catalog.Generation,
 		LastTransitionTime: metav1.Now(), Reason: reason, Message: message,
 	})
 }

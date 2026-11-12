@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"slices"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -41,8 +42,10 @@ import (
 
 const (
 	catalogRoleGrantFinalizer          = "polaris.apache.org/catalog-role-grant-cleanup"
-	catalogRoleGrantReadyConditionType = "Ready"
+	catalogRoleGrantReadyConditionType = readyConditionType
 	catalogRoleGrantRequeueAfter       = 30 * time.Second
+	catalogGrantType                   = "catalog"
+	namespaceGrantType                 = "namespace"
 )
 
 // PolarisCatalogRoleGrantReconciler reconciles one privilege grant.
@@ -73,61 +76,14 @@ func (r *PolarisCatalogRoleGrantReconciler) Reconcile(ctx context.Context, req c
 		if err := r.Update(ctx, grantResource); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
-	if grantResource.Status.ObservedCatalogRoleName == "" {
-		if deleting {
-			controllerutil.RemoveFinalizer(grantResource, catalogRoleGrantFinalizer)
-			return ctrl.Result{}, r.Update(ctx, grantResource)
-		}
-		role := &polarisv1alpha1.PolarisCatalogRole{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: grantResource.Namespace, Name: grantResource.Spec.CatalogRoleRef}, role); err != nil {
-			return r.catalogRoleGrantFailure(ctx, grantResource, "CatalogRoleNotFound", errors.New("referenced PolarisCatalogRole was not found"))
-		}
-		if !meta.IsStatusConditionTrue(role.Status.Conditions, "Ready") {
-			return r.catalogRoleGrantFailure(ctx, grantResource, "CatalogRoleNotReady", errors.New("referenced PolarisCatalogRole must be Ready before granting privileges"))
-		}
-		if role.Status.ObservedCatalogName == "" || role.Status.ObservedRoleName == "" || role.Status.ObservedConnectionRef == "" {
-			return r.catalogRoleGrantFailure(ctx, grantResource, "CatalogRoleIdentityUnknown", errors.New("catalog role has no recorded remote identity"))
-		}
-		if err := validateGrant(grantResource.Spec.Grant); err != nil {
-			return r.catalogRoleGrantFailure(ctx, grantResource, "InvalidGrant", err)
-		}
-		grantResource.Status.ObservedCatalogRoleRef = grantResource.Spec.CatalogRoleRef
-		grantResource.Status.ObservedCatalogName = role.Status.ObservedCatalogName
-		grantResource.Status.ObservedCatalogRoleName = role.Status.ObservedRoleName
-		grantResource.Status.ObservedConnectionRef = role.Status.ObservedConnectionRef
-		observedGrant := grantResource.Spec.Grant
-		grantResource.Status.ObservedGrant = &observedGrant
-		if err := r.Status().Update(ctx, grantResource); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{Requeue: true}, nil
+	if result, handled, err := r.initializeCatalogRoleGrant(ctx, grantResource, deleting); handled {
+		return result, err
 	}
-
-	if !deleting {
-		role := &polarisv1alpha1.PolarisCatalogRole{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: grantResource.Namespace, Name: grantResource.Spec.CatalogRoleRef}, role); err != nil {
-			return r.catalogRoleGrantFailure(ctx, grantResource, "CatalogRoleNotFound", errors.New("referenced PolarisCatalogRole was not found"))
-		}
-		if !meta.IsStatusConditionTrue(role.Status.Conditions, "Ready") {
-			return r.catalogRoleGrantFailure(ctx, grantResource, "CatalogRoleNotReady", errors.New("referenced PolarisCatalogRole must remain Ready"))
-		}
-		if grantResource.Spec.CatalogRoleRef != grantResource.Status.ObservedCatalogRoleRef ||
-			role.Status.ObservedCatalogName != grantResource.Status.ObservedCatalogName ||
-			role.Status.ObservedRoleName != grantResource.Status.ObservedCatalogRoleName ||
-			role.Status.ObservedConnectionRef != grantResource.Status.ObservedConnectionRef {
-			return r.catalogRoleGrantFailure(ctx, grantResource, "IdentityChanged",
-				errors.New("catalog role identity changed; restore its recorded identity or delete this grant"))
-		}
-		if grantResource.Status.ObservedGrant == nil || !reflect.DeepEqual(grantResource.Spec.Grant, *grantResource.Status.ObservedGrant) {
-			return r.catalogRoleGrantFailure(ctx, grantResource, "GrantIdentityChanged",
-				errors.New("grant identity is immutable; delete this resource and create a new grant"))
-		}
-		if err := validateGrant(grantResource.Spec.Grant); err != nil {
-			return r.catalogRoleGrantFailure(ctx, grantResource, "InvalidGrant", err)
-		}
+	if result, handled, err := r.validateObservedCatalogRoleGrant(ctx, grantResource, deleting); handled {
+		return result, err
 	}
 
 	connection := &polarisv1alpha1.PolarisConnection{}
@@ -143,29 +99,7 @@ func (r *PolarisCatalogRoleGrantReconciler) Reconcile(ctx context.Context, req c
 	}
 	grant := toPolarisGrant(*grantResource.Status.ObservedGrant)
 	if deleting {
-		if !grantResource.Spec.Cascade {
-			grants, listErr := apiClient.ListCatalogRoleGrants(ctx, grantResource.Status.ObservedCatalogName, grantResource.Status.ObservedCatalogRoleName)
-			if httpErr, ok := errors.AsType[*polarisclient.HTTPError](listErr); listErr != nil && ok && httpErr.StatusCode == http.StatusNotFound {
-				grants = nil
-				listErr = nil
-			}
-			if listErr != nil {
-				return r.catalogRoleGrantFailure(ctx, grantResource, "GrantReadFailed", listErr)
-			}
-			if !containsGrant(grants, grant) {
-				controllerutil.RemoveFinalizer(grantResource, catalogRoleGrantFinalizer)
-				return ctrl.Result{}, r.Update(ctx, grantResource)
-			}
-		}
-		err := apiClient.RevokeCatalogRoleGrant(ctx, grantResource.Status.ObservedCatalogName,
-			grantResource.Status.ObservedCatalogRoleName, grant, grantResource.Spec.Cascade)
-		if httpErr, ok := errors.AsType[*polarisclient.HTTPError](err); err != nil {
-			if !ok || httpErr.StatusCode != http.StatusNotFound {
-				return r.catalogRoleGrantFailure(ctx, grantResource, "RevokeFailed", err)
-			}
-		}
-		controllerutil.RemoveFinalizer(grantResource, catalogRoleGrantFinalizer)
-		return ctrl.Result{}, r.Update(ctx, grantResource)
+		return r.reconcileCatalogRoleGrantDeletion(ctx, grantResource, apiClient, grant)
 	}
 
 	grants, err := apiClient.ListCatalogRoleGrants(ctx, grantResource.Status.ObservedCatalogName, grantResource.Status.ObservedCatalogRoleName)
@@ -192,16 +126,124 @@ func (r *PolarisCatalogRoleGrantReconciler) Reconcile(ctx context.Context, req c
 	return ctrl.Result{RequeueAfter: catalogRoleGrantRequeueAfter}, nil
 }
 
+func (r *PolarisCatalogRoleGrantReconciler) initializeCatalogRoleGrant(
+	ctx context.Context,
+	grantResource *polarisv1alpha1.PolarisCatalogRoleGrant,
+	deleting bool,
+) (ctrl.Result, bool, error) {
+	if grantResource.Status.ObservedCatalogRoleName != "" {
+		return ctrl.Result{}, false, nil
+	}
+	if deleting {
+		controllerutil.RemoveFinalizer(grantResource, catalogRoleGrantFinalizer)
+		return ctrl.Result{}, true, r.Update(ctx, grantResource)
+	}
+	role := &polarisv1alpha1.PolarisCatalogRole{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: grantResource.Namespace, Name: grantResource.Spec.CatalogRoleRef}, role); err != nil {
+		result, failureErr := r.catalogRoleGrantFailure(ctx, grantResource, "CatalogRoleNotFound", errors.New("referenced PolarisCatalogRole was not found"))
+		return result, true, failureErr
+	}
+	if !meta.IsStatusConditionTrue(role.Status.Conditions, readyConditionType) {
+		result, failureErr := r.catalogRoleGrantFailure(ctx, grantResource, "CatalogRoleNotReady", errors.New("referenced PolarisCatalogRole must be Ready before granting privileges"))
+		return result, true, failureErr
+	}
+	if role.Status.ObservedCatalogName == "" || role.Status.ObservedRoleName == "" || role.Status.ObservedConnectionRef == "" {
+		result, failureErr := r.catalogRoleGrantFailure(ctx, grantResource, "CatalogRoleIdentityUnknown", errors.New("catalog role has no recorded remote identity"))
+		return result, true, failureErr
+	}
+	if err := validateGrant(grantResource.Spec.Grant); err != nil {
+		result, failureErr := r.catalogRoleGrantFailure(ctx, grantResource, "InvalidGrant", err)
+		return result, true, failureErr
+	}
+	grantResource.Status.ObservedCatalogRoleRef = grantResource.Spec.CatalogRoleRef
+	grantResource.Status.ObservedCatalogName = role.Status.ObservedCatalogName
+	grantResource.Status.ObservedCatalogRoleName = role.Status.ObservedRoleName
+	grantResource.Status.ObservedConnectionRef = role.Status.ObservedConnectionRef
+	observedGrant := grantResource.Spec.Grant
+	grantResource.Status.ObservedGrant = &observedGrant
+	if err := r.Status().Update(ctx, grantResource); err != nil {
+		return ctrl.Result{}, true, err
+	}
+	return ctrl.Result{RequeueAfter: time.Second}, true, nil
+}
+
+func (r *PolarisCatalogRoleGrantReconciler) validateObservedCatalogRoleGrant(
+	ctx context.Context,
+	grantResource *polarisv1alpha1.PolarisCatalogRoleGrant,
+	deleting bool,
+) (ctrl.Result, bool, error) {
+	if deleting {
+		return ctrl.Result{}, false, nil
+	}
+	role := &polarisv1alpha1.PolarisCatalogRole{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: grantResource.Namespace, Name: grantResource.Spec.CatalogRoleRef}, role); err != nil {
+		result, failureErr := r.catalogRoleGrantFailure(ctx, grantResource, "CatalogRoleNotFound", errors.New("referenced PolarisCatalogRole was not found"))
+		return result, true, failureErr
+	}
+	if !meta.IsStatusConditionTrue(role.Status.Conditions, readyConditionType) {
+		result, failureErr := r.catalogRoleGrantFailure(ctx, grantResource, "CatalogRoleNotReady", errors.New("referenced PolarisCatalogRole must remain Ready"))
+		return result, true, failureErr
+	}
+	if grantResource.Spec.CatalogRoleRef != grantResource.Status.ObservedCatalogRoleRef ||
+		role.Status.ObservedCatalogName != grantResource.Status.ObservedCatalogName ||
+		role.Status.ObservedRoleName != grantResource.Status.ObservedCatalogRoleName ||
+		role.Status.ObservedConnectionRef != grantResource.Status.ObservedConnectionRef {
+		result, failureErr := r.catalogRoleGrantFailure(ctx, grantResource, "IdentityChanged",
+			errors.New("catalog role identity changed; restore its recorded identity or delete this grant"))
+		return result, true, failureErr
+	}
+	if grantResource.Status.ObservedGrant == nil || !reflect.DeepEqual(grantResource.Spec.Grant, *grantResource.Status.ObservedGrant) {
+		result, failureErr := r.catalogRoleGrantFailure(ctx, grantResource, "GrantIdentityChanged",
+			errors.New("grant identity is immutable; delete this resource and create a new grant"))
+		return result, true, failureErr
+	}
+	if err := validateGrant(grantResource.Spec.Grant); err != nil {
+		result, failureErr := r.catalogRoleGrantFailure(ctx, grantResource, "InvalidGrant", err)
+		return result, true, failureErr
+	}
+	return ctrl.Result{}, false, nil
+}
+func (r *PolarisCatalogRoleGrantReconciler) reconcileCatalogRoleGrantDeletion(
+	ctx context.Context,
+	grantResource *polarisv1alpha1.PolarisCatalogRoleGrant,
+	apiClient *polarisclient.Client,
+	grant polarisclient.Grant,
+) (ctrl.Result, error) {
+	if !grantResource.Spec.Cascade {
+		grants, err := apiClient.ListCatalogRoleGrants(ctx, grantResource.Status.ObservedCatalogName, grantResource.Status.ObservedCatalogRoleName)
+		if httpErr, ok := errors.AsType[*polarisclient.HTTPError](err); err != nil && ok && httpErr.StatusCode == http.StatusNotFound {
+			grants = nil
+			err = nil
+		}
+		if err != nil {
+			return r.catalogRoleGrantFailure(ctx, grantResource, "GrantReadFailed", err)
+		}
+		if !containsGrant(grants, grant) {
+			controllerutil.RemoveFinalizer(grantResource, catalogRoleGrantFinalizer)
+			return ctrl.Result{}, r.Update(ctx, grantResource)
+		}
+	}
+	err := apiClient.RevokeCatalogRoleGrant(ctx, grantResource.Status.ObservedCatalogName,
+		grantResource.Status.ObservedCatalogRoleName, grant, grantResource.Spec.Cascade)
+	if httpErr, ok := errors.AsType[*polarisclient.HTTPError](err); err != nil {
+		if !ok || httpErr.StatusCode != http.StatusNotFound {
+			return r.catalogRoleGrantFailure(ctx, grantResource, "RevokeFailed", err)
+		}
+	}
+	controllerutil.RemoveFinalizer(grantResource, catalogRoleGrantFinalizer)
+	return ctrl.Result{}, r.Update(ctx, grantResource)
+}
+
 func validateGrant(grant polarisv1alpha1.PolarisGrantSpec) error {
 	if grant.Privilege == "" {
 		return errors.New("grant privilege must not be empty")
 	}
 	switch grant.Type {
-	case "catalog":
+	case catalogGrantType:
 		if len(grant.Namespace) != 0 || grant.TableName != "" || grant.ViewName != "" || grant.PolicyName != "" {
 			return errors.New("catalog grants cannot specify a namespace or child resource name")
 		}
-	case "namespace":
+	case namespaceGrantType:
 		if err := validateGrantNamespace(grant.Namespace); err != nil {
 			return err
 		}
@@ -239,10 +281,8 @@ func validateGrantNamespace(namespace []string) error {
 	if len(namespace) == 0 {
 		return errors.New("namespace path is required for this grant type")
 	}
-	for _, segment := range namespace {
-		if segment == "" {
-			return errors.New("namespace path segments must not be empty")
-		}
+	if slices.Contains(namespace, "") {
+		return errors.New("namespace path segments must not be empty")
 	}
 	return nil
 }

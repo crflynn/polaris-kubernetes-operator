@@ -31,6 +31,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+const principalStatusTestCredentialsAvailable = "CredentialsAvailable"
+const principalStatusTestNamespace = "team-a"
+
 func TestPrincipalFailureUpdatesConditionsAndRequeues(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
@@ -41,9 +44,9 @@ func TestPrincipalFailureUpdatesConditionsAndRequeues(t *testing.T) {
 		t.Fatal(err)
 	}
 	principal := &polarisv1alpha1.PolarisPrincipal{
-		ObjectMeta: metav1.ObjectMeta{Name: "analyst", Namespace: "team-a", Generation: 3},
+		ObjectMeta: metav1.ObjectMeta{Name: testAnalystPrincipalName, Namespace: principalStatusTestNamespace, Generation: 3},
 		Status: polarisv1alpha1.PolarisPrincipalStatus{Conditions: []metav1.Condition{{
-			Type: principalCredentialsConditionType, Status: metav1.ConditionTrue, Reason: "CredentialsAvailable",
+			Type: principalCredentialsConditionType, Status: metav1.ConditionTrue, Reason: principalStatusTestCredentialsAvailable,
 		}}},
 	}
 	kubeClient := fake.NewClientBuilder().WithScheme(scheme).
@@ -64,7 +67,7 @@ func TestPrincipalFailureUpdatesConditionsAndRequeues(t *testing.T) {
 	if err := kubeClient.Get(ctx, key, stored); err != nil {
 		t.Fatal(err)
 	}
-	for _, conditionType := range []string{principalReadyConditionType, principalCredentialsConditionType} {
+	for _, conditionType := range []string{readyConditionType, principalCredentialsConditionType} {
 		condition := meta.FindStatusCondition(stored.Status.Conditions, conditionType)
 		if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != "RemoteUnavailable" ||
 			condition.Message != cause.Error() || condition.ObservedGeneration != principal.Generation {
@@ -83,9 +86,9 @@ func TestPrincipalReadyFailurePreservesCredentialCondition(t *testing.T) {
 		t.Fatal(err)
 	}
 	principal := &polarisv1alpha1.PolarisPrincipal{
-		ObjectMeta: metav1.ObjectMeta{Name: "analyst", Namespace: "team-a", Generation: 2},
+		ObjectMeta: metav1.ObjectMeta{Name: testAnalystPrincipalName, Namespace: principalStatusTestNamespace, Generation: 2},
 		Status: polarisv1alpha1.PolarisPrincipalStatus{Conditions: []metav1.Condition{{
-			Type: principalCredentialsConditionType, Status: metav1.ConditionTrue, Reason: "CredentialsAvailable",
+			Type: principalCredentialsConditionType, Status: metav1.ConditionTrue, Reason: principalStatusTestCredentialsAvailable,
 		}}},
 	}
 	kubeClient := fake.NewClientBuilder().WithScheme(scheme).
@@ -106,12 +109,12 @@ func TestPrincipalReadyFailurePreservesCredentialCondition(t *testing.T) {
 	if err := kubeClient.Get(ctx, key, stored); err != nil {
 		t.Fatal(err)
 	}
-	ready := meta.FindStatusCondition(stored.Status.Conditions, principalReadyConditionType)
+	ready := meta.FindStatusCondition(stored.Status.Conditions, readyConditionType)
 	if ready == nil || ready.Status != metav1.ConditionFalse || ready.Reason != "RemoteUnavailable" || ready.Message != cause.Error() {
 		t.Fatalf("Ready condition = %#v", ready)
 	}
 	credentials := meta.FindStatusCondition(stored.Status.Conditions, principalCredentialsConditionType)
-	if credentials == nil || credentials.Status != metav1.ConditionTrue || credentials.Reason != "CredentialsAvailable" {
+	if credentials == nil || credentials.Status != metav1.ConditionTrue || credentials.Reason != principalStatusTestCredentialsAvailable {
 		t.Fatalf("CredentialsReady condition changed: %#v", credentials)
 	}
 }

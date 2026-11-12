@@ -25,6 +25,11 @@ import (
 	"testing"
 )
 
+const (
+	icebergTestMetadataLocation = "s3://warehouse/metadata.json"
+	icebergTestMetadataResponse = `{"metadata-location":"` + icebergTestMetadataLocation + `"}`
+)
+
 func TestIcebergRegistrationClientUsesNestedPathsAndSafeOperations(t *testing.T) {
 	t.Parallel()
 
@@ -41,17 +46,17 @@ func TestIcebergRegistrationClientUsesNestedPathsAndSafeOperations(t *testing.T)
 		switch key {
 		case "GET " + tablePath, "GET " + viewPath:
 			seen[key] = true
-			_, _ = w.Write([]byte(`{"metadata-location":"s3://warehouse/metadata.json"}`))
+			_, _ = w.Write([]byte(icebergTestMetadataResponse))
 		case "POST /api/catalog/v1/warehouse/namespaces/db.schema/register":
 			var body map[string]string
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode table registration: %v", err)
 			}
-			if !reflect.DeepEqual(body, map[string]string{"name": "sales/2026", "metadata-location": "s3://warehouse/metadata.json"}) {
+			if !reflect.DeepEqual(body, map[string]string{"name": "sales/2026", "metadata-location": icebergTestMetadataLocation}) {
 				t.Errorf("table registration body = %#v", body)
 			}
 			seen[key] = true
-			_, _ = w.Write([]byte(`{"metadata-location":"s3://warehouse/metadata.json"}`))
+			_, _ = w.Write([]byte(icebergTestMetadataResponse))
 		case "POST /api/catalog/v1/warehouse/namespaces/db.schema/register-view":
 			var body map[string]string
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -83,10 +88,10 @@ func TestIcebergRegistrationClientUsesNestedPathsAndSafeOperations(t *testing.T)
 	}
 
 	namespace := []string{"db", "schema"}
-	if _, err := client.RegisterTable(context.Background(), "warehouse", namespace, "sales/2026", "s3://warehouse/metadata.json"); err != nil {
+	if _, err := client.RegisterTable(context.Background(), "warehouse", namespace, "sales/2026", icebergTestMetadataLocation); err != nil {
 		t.Fatalf("RegisterTable() error = %v", err)
 	}
-	if table, err := client.GetTable(context.Background(), "warehouse", namespace, "sales/2026"); err != nil || table.MetadataLocation != "s3://warehouse/metadata.json" {
+	if table, err := client.GetTable(context.Background(), "warehouse", namespace, "sales/2026"); err != nil || table.MetadataLocation != icebergTestMetadataLocation {
 		t.Fatalf("GetTable() = %#v, %v", table, err)
 	}
 	if err := client.UnregisterTable(context.Background(), "warehouse", namespace, "sales/2026"); err != nil {
@@ -98,7 +103,7 @@ func TestIcebergRegistrationClientUsesNestedPathsAndSafeOperations(t *testing.T)
 	if _, err := client.RegisterView(context.Background(), "warehouse", namespace, "summary", "s3://warehouse/view-metadata.json"); err != nil {
 		t.Fatalf("RegisterView() error = %v", err)
 	}
-	if view, err := client.GetView(context.Background(), "warehouse", namespace, "summary"); err != nil || view.MetadataLocation != "s3://warehouse/metadata.json" {
+	if view, err := client.GetView(context.Background(), "warehouse", namespace, "summary"); err != nil || view.MetadataLocation != icebergTestMetadataLocation {
 		t.Fatalf("GetView() = %#v, %v", view, err)
 	}
 	if err := client.DeleteView(context.Background(), "warehouse", namespace, "summary"); err != nil {

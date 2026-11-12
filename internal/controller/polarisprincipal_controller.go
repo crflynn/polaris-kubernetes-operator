@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
-	"sort"
+	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -42,7 +42,6 @@ import (
 
 const (
 	principalFinalizer                = "polaris.apache.org/principal-cleanup"
-	principalReadyConditionType       = "Ready"
 	principalCredentialsConditionType = "CredentialsReady"
 )
 
@@ -98,7 +97,7 @@ func (r *PolarisPrincipalReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		if err := r.Update(ctx, principal); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	secret, err := r.ensurePrincipalSecret(ctx, principal)
@@ -109,51 +108,12 @@ func (r *PolarisPrincipalReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err := r.reconcilePrincipalSecretTemplate(ctx, principal, secret); err != nil {
 		return r.principalReadyFailure(ctx, principal, "CredentialsSecretTemplateFailed", err)
 	}
-	remote, err := apiClient.GetPrincipal(ctx, principal.Spec.PrincipalName)
-	if httpErr, ok := errors.AsType[*polarisclient.HTTPError](err); err != nil && ok && httpErr.StatusCode == http.StatusNotFound {
-		created, createErr := apiClient.CreatePrincipal(ctx, polarisclient.Principal{
-			Name: principal.Spec.PrincipalName, Properties: principal.Spec.Properties,
-		})
-		if createErr != nil {
-			return r.principalFailure(ctx, principal, "CreateFailed", createErr)
-		}
-		remote = created.Principal
-		if err := r.writePrincipalCredentials(ctx, secret, created.Credentials); err != nil {
-			return r.principalFailure(ctx, principal, "CredentialsPersistenceFailed", err)
-		}
-	} else if err != nil {
-		return r.principalFailure(ctx, principal, "ReadFailed", err)
-	} else {
-		if !reflect.DeepEqual(remote.Properties, principal.Spec.Properties) {
-			remote.Properties = principal.Spec.Properties
-			remote, err = apiClient.UpdatePrincipal(ctx, remote)
-			if err != nil {
-				return r.principalFailure(ctx, principal, "UpdateFailed", err)
-			}
-		}
+	remote, result, stop, err := r.reconcilePrincipalRemote(ctx, apiClient, principal, secret)
+	if stop || err != nil {
+		return result, err
 	}
 
-	if requested := principal.Spec.CredentialRotationRequestID; requested != nil {
-		if *requested < principal.Status.LastCredentialRotationRequestID {
-			return r.principalFailure(ctx, principal, "InvalidRotationRequest", errors.New("credentialRotationRequestID cannot decrease"))
-		}
-		if *requested > principal.Status.LastCredentialRotationRequestID {
-			principal.Status.LastCredentialRotationRequestID = *requested
-			if err := r.Status().Update(ctx, principal); err != nil {
-				return ctrl.Result{}, err
-			}
-			rotated, rotateErr := apiClient.RotatePrincipal(ctx, principal.Spec.PrincipalName)
-			if rotateErr != nil {
-				return r.principalFailure(ctx, principal, "CredentialRotationFailed", rotateErr)
-			}
-			remote = rotated.Principal
-			if err := r.writePrincipalCredentials(ctx, secret, rotated.Credentials); err != nil {
-				return r.principalFailure(ctx, principal, "CredentialsPersistenceFailed", err)
-			}
-		}
-	}
-
-	if len(secret.Data["client-id"]) == 0 || len(secret.Data["client-secret"]) == 0 {
+	if len(secret.Data[clientIDSecretKey]) == 0 || len(secret.Data[clientSecretSecretKey]) == 0 {
 		return r.principalFailure(ctx, principal, "CredentialsMissing",
 			errors.New("credentials Secret has no credentials; set a new credentialRotationRequestID to rotate credentials"))
 	}
@@ -163,7 +123,7 @@ func (r *PolarisPrincipalReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	principal.Status.CredentialsSecretResourceVersion = secret.ResourceVersion
 	principal.Status.LastReconciledTime = &now
 	meta.SetStatusCondition(&principal.Status.Conditions, metav1.Condition{
-		Type: principalReadyConditionType, Status: metav1.ConditionTrue, ObservedGeneration: principal.Generation,
+		Type: readyConditionType, Status: metav1.ConditionTrue, ObservedGeneration: principal.Generation,
 		LastTransitionTime: now, Reason: "PrincipalReady", Message: "Polaris principal matches the desired state",
 	})
 	meta.SetStatusCondition(&principal.Status.Conditions, metav1.Condition{
@@ -175,6 +135,63 @@ func (r *PolarisPrincipalReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	}
 	logger.Info("Reconciled Polaris principal", "name", principal.Name)
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+func (r *PolarisPrincipalReconciler) reconcilePrincipalRemote(
+	ctx context.Context,
+	apiClient *polarisclient.Client,
+	principal *polarisv1alpha1.PolarisPrincipal,
+	secret *corev1.Secret,
+) (polarisclient.Principal, ctrl.Result, bool, error) {
+	remote, err := apiClient.GetPrincipal(ctx, principal.Spec.PrincipalName)
+	if httpErr, ok := errors.AsType[*polarisclient.HTTPError](err); err != nil && ok && httpErr.StatusCode == http.StatusNotFound {
+		created, createErr := apiClient.CreatePrincipal(ctx, polarisclient.Principal{
+			Name: principal.Spec.PrincipalName, Properties: principal.Spec.Properties,
+		})
+		if createErr != nil {
+			result, failureErr := r.principalFailure(ctx, principal, "CreateFailed", createErr)
+			return polarisclient.Principal{}, result, true, failureErr
+		}
+		remote = created.Principal
+		if err := r.writePrincipalCredentials(ctx, secret, created.Credentials); err != nil {
+			result, failureErr := r.principalFailure(ctx, principal, "CredentialsPersistenceFailed", err)
+			return polarisclient.Principal{}, result, true, failureErr
+		}
+	} else if err != nil {
+		result, failureErr := r.principalFailure(ctx, principal, "ReadFailed", err)
+		return polarisclient.Principal{}, result, true, failureErr
+	} else if !reflect.DeepEqual(remote.Properties, principal.Spec.Properties) {
+		remote.Properties = principal.Spec.Properties
+		remote, err = apiClient.UpdatePrincipal(ctx, remote)
+		if err != nil {
+			result, failureErr := r.principalFailure(ctx, principal, "UpdateFailed", err)
+			return polarisclient.Principal{}, result, true, failureErr
+		}
+	}
+
+	if requested := principal.Spec.CredentialRotationRequestID; requested != nil {
+		if *requested < principal.Status.LastCredentialRotationRequestID {
+			result, failureErr := r.principalFailure(ctx, principal, "InvalidRotationRequest", errors.New("credentialRotationRequestID cannot decrease"))
+			return polarisclient.Principal{}, result, true, failureErr
+		}
+		if *requested > principal.Status.LastCredentialRotationRequestID {
+			principal.Status.LastCredentialRotationRequestID = *requested
+			if err := r.Status().Update(ctx, principal); err != nil {
+				return polarisclient.Principal{}, ctrl.Result{}, true, err
+			}
+			rotated, rotateErr := apiClient.RotatePrincipal(ctx, principal.Spec.PrincipalName)
+			if rotateErr != nil {
+				result, failureErr := r.principalFailure(ctx, principal, "CredentialRotationFailed", rotateErr)
+				return polarisclient.Principal{}, result, true, failureErr
+			}
+			remote = rotated.Principal
+			if err := r.writePrincipalCredentials(ctx, secret, rotated.Credentials); err != nil {
+				result, failureErr := r.principalFailure(ctx, principal, "CredentialsPersistenceFailed", err)
+				return polarisclient.Principal{}, result, true, failureErr
+			}
+		}
+	}
+	return remote, ctrl.Result{}, false, nil
 }
 
 func (r *PolarisPrincipalReconciler) ensurePrincipalSecret(ctx context.Context, principal *polarisv1alpha1.PolarisPrincipal) (*corev1.Secret, error) {
@@ -271,13 +288,13 @@ func sortedMetadataKeys(metadata map[string]string) []string {
 	for key := range metadata {
 		keys = append(keys, key)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	return keys
 }
 
 func (r *PolarisPrincipalReconciler) principalReadyFailure(ctx context.Context, principal *polarisv1alpha1.PolarisPrincipal, reason string, cause error) (ctrl.Result, error) {
 	meta.SetStatusCondition(&principal.Status.Conditions, metav1.Condition{
-		Type: principalReadyConditionType, Status: metav1.ConditionFalse, ObservedGeneration: principal.Generation,
+		Type: readyConditionType, Status: metav1.ConditionFalse, ObservedGeneration: principal.Generation,
 		LastTransitionTime: metav1.Now(), Reason: reason, Message: cause.Error(),
 	})
 	if err := r.Status().Update(ctx, principal); err != nil {
@@ -288,11 +305,11 @@ func (r *PolarisPrincipalReconciler) principalReadyFailure(ctx context.Context, 
 
 func (r *PolarisPrincipalReconciler) writePrincipalCredentials(ctx context.Context, secret *corev1.Secret, credentials polarisclient.PrincipalCredentials) error {
 	if credentials.ClientID == "" || credentials.ClientSecret == "" {
-		return errors.New("Polaris returned empty principal credentials")
+		return errors.New("empty principal credentials returned by Polaris")
 	}
 	secret.Data = map[string][]byte{
-		"client-id":     []byte(credentials.ClientID),
-		"client-secret": []byte(credentials.ClientSecret),
+		clientIDSecretKey:     []byte(credentials.ClientID),
+		clientSecretSecretKey: []byte(credentials.ClientSecret),
 	}
 	return r.Update(ctx, secret)
 }
@@ -301,7 +318,7 @@ func (r *PolarisPrincipalReconciler) principalFailure(ctx context.Context, princ
 	now := metav1.Now()
 	message := cause.Error()
 	meta.SetStatusCondition(&principal.Status.Conditions, metav1.Condition{
-		Type: principalReadyConditionType, Status: metav1.ConditionFalse, ObservedGeneration: principal.Generation,
+		Type: readyConditionType, Status: metav1.ConditionFalse, ObservedGeneration: principal.Generation,
 		LastTransitionTime: now, Reason: reason, Message: message,
 	})
 	meta.SetStatusCondition(&principal.Status.Conditions, metav1.Condition{

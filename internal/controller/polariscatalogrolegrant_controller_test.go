@@ -33,13 +33,26 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+const (
+	catalogRoleGrantTestReadProperties      = "CATALOG_READ_PROPERTIES"
+	catalogRoleGrantTestReady               = readyConditionType
+	catalogRoleGrantTestBearerAuthorization = testBearerAuthorization
+	catalogRoleGrantTestValid               = true
+	catalogRoleGrantTestReadyMessage        = "ready"
+	catalogRoleGrantTestSchema              = "schema"
+	catalogRoleGrantTestTable               = "table"
+	catalogRoleGrantTestSummary             = "summary"
+	catalogRoleGrantTestRetention           = "retention"
+	catalogRoleGrantTestCascadeTrue         = "true"
+)
+
 func TestPolarisCatalogRoleGrantLifecycleAndCascade(t *testing.T) {
 	ctx := context.Background()
 	var grants []polarisclient.Grant
 	var addCalls, revokeCalls int
 	const grantPath = "/api/management/v1/catalogs/warehouse/catalog-roles/writers/grants"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer test-token" {
+		if r.Header.Get("Authorization") != catalogRoleGrantTestBearerAuthorization {
 			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
 		}
 		switch {
@@ -52,14 +65,14 @@ func TestPolarisCatalogRoleGrantLifecycleAndCascade(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode add grant: %v", err)
 			}
-			if body.Grant.Type != "catalog" || body.Grant.Privilege != "CATALOG_READ_PROPERTIES" {
+			if body.Grant.Type != testCatalogGrantType || body.Grant.Privilege != catalogRoleGrantTestReadProperties {
 				t.Errorf("grant payload = %#v", body.Grant)
 			}
 			grants = append(grants, body.Grant)
 			addCalls++
 			w.WriteHeader(http.StatusCreated)
 		case r.URL.Path == grantPath && r.Method == http.MethodPost:
-			if r.URL.Query().Get("cascade") != "true" {
+			if r.URL.Query().Get("cascade") != catalogRoleGrantTestCascadeTrue {
 				t.Errorf("cascade = %q", r.URL.Query().Get("cascade"))
 			}
 			var body struct {
@@ -68,7 +81,7 @@ func TestPolarisCatalogRoleGrantLifecycleAndCascade(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode revoke grant: %v", err)
 			}
-			if body.Grant.Type != "catalog" || body.Grant.Privilege != "CATALOG_READ_PROPERTIES" {
+			if body.Grant.Type != testCatalogGrantType || body.Grant.Privilege != catalogRoleGrantTestReadProperties {
 				t.Errorf("revoked grant payload = %#v", body.Grant)
 			}
 			grants = nil
@@ -89,29 +102,29 @@ func TestPolarisCatalogRoleGrantLifecycleAndCascade(t *testing.T) {
 		t.Fatal(err)
 	}
 	connection := &polarisv1alpha1.PolarisConnection{
-		ObjectMeta: metav1.ObjectMeta{Name: "remote", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: testRemoteConnectionName, Namespace: testDefaultNamespace},
 		Spec: polarisv1alpha1.PolarisConnectionSpec{
 			ManagementURL: server.URL + "/api/management/v1",
 			Auth: polarisv1alpha1.PolarisConnectionAuth{BearerTokenSecretRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "auth"}, Key: "token",
+				LocalObjectReference: corev1.LocalObjectReference{Name: testAuthSecretName}, Key: testTokenKey,
 			}},
 		},
 	}
-	authSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"}, Data: map[string][]byte{"token": []byte("test-token")}}
-	readyCondition := metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", Message: "ready", LastTransitionTime: metav1.Now()}
+	authSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: testAuthSecretName, Namespace: testDefaultNamespace}, Data: map[string][]byte{testTokenKey: []byte("test-token")}}
+	readyCondition := metav1.Condition{Type: catalogRoleGrantTestReady, Status: metav1.ConditionTrue, Reason: catalogRoleGrantTestReady, Message: catalogRoleGrantTestReadyMessage, LastTransitionTime: metav1.Now()}
 	catalogRole := &polarisv1alpha1.PolarisCatalogRole{
-		ObjectMeta: metav1.ObjectMeta{Name: "writers", Namespace: "default"},
-		Spec:       polarisv1alpha1.PolarisCatalogRoleSpec{CatalogRef: "warehouse", CatalogRoleName: "writers"},
+		ObjectMeta: metav1.ObjectMeta{Name: testCatalogRoleWritersName, Namespace: testDefaultNamespace},
+		Spec:       polarisv1alpha1.PolarisCatalogRoleSpec{CatalogRef: testWarehouseCatalogName, CatalogRoleName: testCatalogRoleWritersName},
 		Status: polarisv1alpha1.PolarisCatalogRoleStatus{
-			Conditions: []metav1.Condition{readyCondition}, ObservedCatalogName: "warehouse",
-			ObservedRoleName: "writers", ObservedConnectionRef: "remote",
+			Conditions: []metav1.Condition{readyCondition}, ObservedCatalogName: testWarehouseCatalogName,
+			ObservedRoleName: testCatalogRoleWritersName, ObservedConnectionRef: testRemoteConnectionName,
 		},
 	}
 	grant := &polarisv1alpha1.PolarisCatalogRoleGrant{
-		ObjectMeta: metav1.ObjectMeta{Name: "writers-catalog-read-properties", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "writers-catalog-read-properties", Namespace: testDefaultNamespace},
 		Spec: polarisv1alpha1.PolarisCatalogRoleGrantSpec{
 			CatalogRoleRef: catalogRole.Name,
-			Grant:          polarisv1alpha1.PolarisGrantSpec{Type: "catalog", Privilege: "CATALOG_READ_PROPERTIES"},
+			Grant:          polarisv1alpha1.PolarisGrantSpec{Type: testCatalogGrantType, Privilege: catalogRoleGrantTestReadProperties},
 		},
 	}
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).
@@ -162,16 +175,16 @@ func TestValidateGrantScopeFields(t *testing.T) {
 		grant polarisv1alpha1.PolarisGrantSpec
 		valid bool
 	}{
-		{name: "catalog", grant: polarisv1alpha1.PolarisGrantSpec{Type: "catalog", Privilege: "CATALOG_READ_PROPERTIES"}, valid: true},
-		{name: "namespace", grant: polarisv1alpha1.PolarisGrantSpec{Type: "namespace", Namespace: []string{"db", "schema"}, Privilege: "NAMESPACE_LIST"}, valid: true},
-		{name: "table", grant: polarisv1alpha1.PolarisGrantSpec{Type: "table", Namespace: []string{"db"}, TableName: "events", Privilege: "TABLE_READ_DATA"}, valid: true},
-		{name: "view", grant: polarisv1alpha1.PolarisGrantSpec{Type: "view", Namespace: []string{"db"}, ViewName: "summary", Privilege: "VIEW_LIST"}, valid: true},
-		{name: "policy", grant: polarisv1alpha1.PolarisGrantSpec{Type: "policy", Namespace: []string{"db"}, PolicyName: "retention", Privilege: "POLICY_READ"}, valid: true},
-		{name: "namespace segment empty", grant: polarisv1alpha1.PolarisGrantSpec{Type: "namespace", Namespace: []string{"db", ""}, Privilege: "NAMESPACE_LIST"}},
-		{name: "table name missing", grant: polarisv1alpha1.PolarisGrantSpec{Type: "table", Namespace: []string{"db"}, Privilege: "TABLE_READ_DATA"}},
-		{name: "wrong target field", grant: polarisv1alpha1.PolarisGrantSpec{Type: "catalog", TableName: "events", Privilege: "CATALOG_READ_PROPERTIES"}},
+		{name: testCatalogGrantType, grant: polarisv1alpha1.PolarisGrantSpec{Type: testCatalogGrantType, Privilege: catalogRoleGrantTestReadProperties}, valid: catalogRoleGrantTestValid},
+		{name: testNamespaceGrantType, grant: polarisv1alpha1.PolarisGrantSpec{Type: testNamespaceGrantType, Namespace: []string{"db", catalogRoleGrantTestSchema}, Privilege: "NAMESPACE_LIST"}, valid: catalogRoleGrantTestValid},
+		{name: catalogRoleGrantTestTable, grant: polarisv1alpha1.PolarisGrantSpec{Type: catalogRoleGrantTestTable, Namespace: []string{"db"}, TableName: testEventsTableName, Privilege: "TABLE_READ_DATA"}, valid: catalogRoleGrantTestValid},
+		{name: "view", grant: polarisv1alpha1.PolarisGrantSpec{Type: "view", Namespace: []string{"db"}, ViewName: catalogRoleGrantTestSummary, Privilege: "VIEW_LIST"}, valid: catalogRoleGrantTestValid},
+		{name: "policy", grant: polarisv1alpha1.PolarisGrantSpec{Type: "policy", Namespace: []string{"db"}, PolicyName: catalogRoleGrantTestRetention, Privilege: "POLICY_READ"}, valid: catalogRoleGrantTestValid},
+		{name: "namespace segment empty", grant: polarisv1alpha1.PolarisGrantSpec{Type: testNamespaceGrantType, Namespace: []string{"db", ""}, Privilege: "NAMESPACE_LIST"}},
+		{name: "table name missing", grant: polarisv1alpha1.PolarisGrantSpec{Type: catalogRoleGrantTestTable, Namespace: []string{"db"}, Privilege: "TABLE_READ_DATA"}},
+		{name: "wrong target field", grant: polarisv1alpha1.PolarisGrantSpec{Type: testCatalogGrantType, TableName: testEventsTableName, Privilege: catalogRoleGrantTestReadProperties}},
 		{name: "unknown type", grant: polarisv1alpha1.PolarisGrantSpec{Type: "semantic-model", Namespace: []string{"db"}, Privilege: "SEMANTIC_MODEL_READ"}},
-		{name: "privilege missing", grant: polarisv1alpha1.PolarisGrantSpec{Type: "catalog"}},
+		{name: "privilege missing", grant: polarisv1alpha1.PolarisGrantSpec{Type: testCatalogGrantType}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

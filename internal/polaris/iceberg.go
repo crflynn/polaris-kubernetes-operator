@@ -35,7 +35,8 @@ type registerIcebergObjectRequest struct {
 }
 
 func icebergNamespaceURL(base *url.URL, namespaceSeparator, catalogName string, namespace []string, resource ...string) *url.URL {
-	segments := []string{"v1", catalogName, "namespaces", strings.Join(namespace, namespaceSeparator)}
+	segments := make([]string, 0, 4+len(resource))
+	segments = append(segments, "v1", catalogName, "namespaces", strings.Join(namespace, namespaceSeparator))
 	segments = append(segments, resource...)
 	return resourceSegmentsURL(base, segments...)
 }

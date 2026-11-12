@@ -28,13 +28,23 @@ import (
 
 const testRealmHeader = "X-Polaris-Realm"
 
+const (
+	testPolarisRealm        = "POLARIS"
+	testToken               = "test-token"
+	testPolicyType          = "system.retention"
+	testBearerAuthorization = "Bearer " + testToken
+	testSchemaName          = "schema"
+	testOwnerProperty       = "owner"
+	testEventName           = "events"
+)
+
 func TestClientCheckUsesTokenAndRealm(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/oauth/token":
-			if got := r.Header.Get(testRealmHeader); got != "POLARIS" {
+			if got := r.Header.Get(testRealmHeader); got != testPolarisRealm {
 				t.Errorf("%s = %q on token request", testRealmHeader, got)
 			}
 			if got := r.Header.Get("Content-Type"); got != "application/x-www-form-urlencoded" {
@@ -68,7 +78,7 @@ func TestClientCheckUsesTokenAndRealm(t *testing.T) {
 	client, err := NewClient(Config{
 		ManagementURL: server.URL + "/api/management/v1",
 		CatalogURL:    server.URL + "/api/catalog",
-		Realm:         "POLARIS",
+		Realm:         testPolarisRealm,
 		RealmHeader:   testRealmHeader,
 		Auth: AuthConfig{
 			ClientID:     "client-id",
@@ -107,7 +117,7 @@ func TestClientCheckUsesBearerTokenWithoutTokenRequest(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer direct-token" {
 			t.Errorf("Authorization = %q", got)
 		}
-		if got := r.Header.Get(DefaultRealmHeader); got != "POLARIS" {
+		if got := r.Header.Get(DefaultRealmHeader); got != testPolarisRealm {
 			t.Errorf("%s = %q, want POLARIS", DefaultRealmHeader, got)
 		}
 		w.WriteHeader(http.StatusOK)
@@ -116,7 +126,7 @@ func TestClientCheckUsesBearerTokenWithoutTokenRequest(t *testing.T) {
 
 	client, err := NewClient(Config{
 		ManagementURL: server.URL + "/management",
-		Realm:         "POLARIS",
+		Realm:         testPolarisRealm,
 		Auth:          AuthConfig{BearerToken: "direct-token"},
 	})
 	if err != nil {
@@ -153,7 +163,7 @@ func TestNamespaceClientUsesConfiguredSeparatorAndLifecycleRoutes(t *testing.T) 
 		if got := r.URL.EscapedPath(); got != collectionPath && got != namespacePath && got != namespacePath+"/properties" {
 			t.Errorf("request path = %q", got)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+		if got := r.Header.Get("Authorization"); got != testBearerAuthorization {
 			t.Errorf("Authorization = %q", got)
 		}
 		switch {
@@ -162,8 +172,8 @@ func TestNamespaceClientUsesConfiguredSeparatorAndLifecycleRoutes(t *testing.T) 
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode create request: %v", err)
 			}
-			if !reflect.DeepEqual(body["namespace"], []any{"db", "schema"}) ||
-				!reflect.DeepEqual(body["properties"], map[string]any{"owner": "team"}) {
+			if !reflect.DeepEqual(body["namespace"], []any{"db", testSchemaName}) ||
+				!reflect.DeepEqual(body["properties"], map[string]any{testOwnerProperty: testTeam}) {
 				t.Errorf("create body = %#v", body)
 			}
 			sawCreate = true
@@ -176,7 +186,7 @@ func TestNamespaceClientUsesConfiguredSeparatorAndLifecycleRoutes(t *testing.T) 
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode property request: %v", err)
 			}
-			if !reflect.DeepEqual(body["updates"], map[string]any{"owner": "platform"}) ||
+			if !reflect.DeepEqual(body["updates"], map[string]any{testOwnerProperty: "platform"}) ||
 				!reflect.DeepEqual(body["removals"], []any{"retired"}) {
 				t.Errorf("property body = %#v", body)
 			}
@@ -196,12 +206,12 @@ func TestNamespaceClientUsesConfiguredSeparatorAndLifecycleRoutes(t *testing.T) 
 		ManagementURL:      server.URL + "/management",
 		CatalogURL:         server.URL + "/api/catalog",
 		NamespaceSeparator: ".",
-		Auth:               AuthConfig{BearerToken: "test-token"},
+		Auth:               AuthConfig{BearerToken: testToken},
 	})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
-	namespace := Namespace{Namespace: []string{"db", "schema"}, Properties: map[string]string{"owner": "team"}}
+	namespace := Namespace{Namespace: []string{"db", testSchemaName}, Properties: map[string]string{testOwnerProperty: "team"}}
 	if _, err := client.CreateNamespace(context.Background(), "warehouse", namespace); err != nil {
 		t.Fatalf("CreateNamespace() error = %v", err)
 	}
@@ -209,11 +219,11 @@ func TestNamespaceClientUsesConfiguredSeparatorAndLifecycleRoutes(t *testing.T) 
 	if err != nil {
 		t.Fatalf("GetNamespace() error = %v", err)
 	}
-	if !reflect.DeepEqual(remote.Namespace, namespace.Namespace) || remote.Properties["owner"] != "team" {
+	if !reflect.DeepEqual(remote.Namespace, namespace.Namespace) || remote.Properties[testOwnerProperty] != "team" {
 		t.Fatalf("GetNamespace() = %#v", remote)
 	}
 	if _, err := client.UpdateNamespaceProperties(context.Background(), "warehouse", namespace.Namespace,
-		map[string]string{"owner": "platform"}, []string{"retired"}); err != nil {
+		map[string]string{testOwnerProperty: "platform"}, []string{"retired"}); err != nil {
 		t.Fatalf("UpdateNamespaceProperties() error = %v", err)
 	}
 	if err := client.DeleteNamespace(context.Background(), "warehouse", namespace.Namespace); err != nil {
@@ -229,7 +239,7 @@ func assertAuthAndRealm(t *testing.T, r *http.Request) {
 	if got := r.Header.Get("Authorization"); got != "Bearer token-value" {
 		t.Errorf("Authorization = %q", got)
 	}
-	if got := r.Header.Get(testRealmHeader); got != "POLARIS" {
+	if got := r.Header.Get(testRealmHeader); got != testPolarisRealm {
 		t.Errorf("%s = %q", testRealmHeader, got)
 	}
 	if strings.Contains(r.URL.RawQuery, "secret") {
@@ -249,91 +259,121 @@ func TestCatalogResourceURLEscapesNameAsSingleSegment(t *testing.T) {
 	}
 }
 
-func TestPolicyClientUsesVersionedPolicyAndMappingAPIs(t *testing.T) {
-	t.Parallel()
+type policyTestOperations struct {
+	sawCreate  bool
+	sawVersion bool
+	sawAttach  bool
+	sawDetach  bool
+	sawDelete  bool
+}
 
+func newPolicyTestServer(t *testing.T, operations *policyTestOperations) *httptest.Server {
+	t.Helper()
 	const collectionPath = "/api/catalog/polaris/v1/warehouse/namespaces/db.schema/policies"
 	const policyPath = collectionPath + "/retention"
-	var sawCreate, sawVersion, sawAttach, sawDetach, sawDelete bool
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.EscapedPath(); got != collectionPath && got != policyPath && got != policyPath+"/mappings" {
 			t.Errorf("request path = %q", got)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+		if got := r.Header.Get("Authorization"); got != testBearerAuthorization {
 			t.Errorf("Authorization = %q", got)
 		}
-		switch {
-		case r.Method == http.MethodPost && r.URL.EscapedPath() == collectionPath:
-			var body map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Errorf("decode create: %v", err)
-			}
-			if body["name"] != "retention" || body["type"] != "system.retention" {
-				t.Errorf("create body = %#v", body)
-			}
-			sawCreate = true
-			_, _ = w.Write([]byte(`{"policy":{"policy-type":"system.retention","inheritable":true,"name":"retention","description":"old","content":"{}","version":0}}`))
-		case r.Method == http.MethodGet && r.URL.EscapedPath() == policyPath:
-			_, _ = w.Write([]byte(`{"policy":{"policy-type":"system.retention","inheritable":true,"name":"retention","description":"old","content":"{}","version":7}}`))
-		case r.Method == http.MethodPut && r.URL.EscapedPath() == policyPath:
-			var updateBody map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&updateBody); err != nil {
-				t.Errorf("decode update: %v", err)
-			}
-			if updateBody["current-policy-version"] != float64(7) || updateBody["content"] != `{"days":30}` || updateBody["description"] != "new" {
-				t.Errorf("update body = %#v", updateBody)
-			}
-			sawVersion = true
-			_, _ = w.Write([]byte(`{"policy":{"policy-type":"system.retention","inheritable":true,"name":"retention","description":"new","content":"{\"days\":30}","version":8}}`))
-		case r.Method == http.MethodPut && r.URL.EscapedPath() == policyPath+"/mappings":
-			var body map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Errorf("decode attachment: %v", err)
-			}
-			target, ok := body["target"].(map[string]any)
-			if !ok || target["type"] != "table-like" {
-				t.Errorf("attachment target = %#v", body["target"])
-			}
-			path, ok := target["path"].([]any)
-			if !ok || !reflect.DeepEqual(path, []any{"db", "schema", "events"}) {
-				t.Errorf("attachment path = %#v", target["path"])
-			}
-			if params, ok := body["parameters"].(map[string]any); !ok || len(params) != 0 {
-				t.Errorf("attachment parameters = %#v", body["parameters"])
-			}
-			sawAttach = true
-			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodPost && r.URL.EscapedPath() == policyPath+"/mappings":
-			var body map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Errorf("decode detachment: %v", err)
-			}
-			sawDetach = true
-			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodDelete && r.URL.EscapedPath() == policyPath:
-			if r.URL.Query().Get("detach-all") != "true" {
-				t.Errorf("detach-all query = %q", r.URL.RawQuery)
-			}
-			sawDelete = true
-			w.WriteHeader(http.StatusNoContent)
-		default:
-			t.Errorf("unexpected request %s %s", r.Method, r.URL.RequestURI())
-			http.Error(w, "unexpected", http.StatusBadRequest)
+		if handlePolicyLifecycleTestRequest(t, w, r, operations, collectionPath, policyPath) ||
+			handlePolicyMappingTestRequest(t, w, r, operations, policyPath) {
+			return
 		}
+		t.Errorf("unexpected request %s %s", r.Method, r.URL.RequestURI())
+		http.Error(w, "unexpected", http.StatusBadRequest)
 	}))
+}
+
+func handlePolicyLifecycleTestRequest(t *testing.T, w http.ResponseWriter, r *http.Request, operations *policyTestOperations, collectionPath, policyPath string) bool {
+	switch {
+	case r.Method == http.MethodPost && r.URL.EscapedPath() == collectionPath:
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode create: %v", err)
+		}
+		if body["name"] != "retention" || body["type"] != testPolicyType {
+			t.Errorf("create body = %#v", body)
+		}
+		operations.sawCreate = true
+		_, _ = w.Write([]byte(`{"policy":{"policy-type":"system.retention","inheritable":true,"name":"retention","description":"old","content":"{}","version":0}}`))
+	case r.Method == http.MethodGet && r.URL.EscapedPath() == policyPath:
+		_, _ = w.Write([]byte(`{"policy":{"policy-type":"system.retention","inheritable":true,"name":"retention","description":"old","content":"{}","version":7}}`))
+	case r.Method == http.MethodPut && r.URL.EscapedPath() == policyPath:
+		var updateBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&updateBody); err != nil {
+			t.Errorf("decode update: %v", err)
+		}
+		if updateBody["current-policy-version"] != float64(7) || updateBody["content"] != `{"days":30}` || updateBody["description"] != "new" {
+			t.Errorf("update body = %#v", updateBody)
+		}
+		operations.sawVersion = true
+		_, _ = w.Write([]byte(`{"policy":{"policy-type":"system.retention","inheritable":true,"name":"retention","description":"new","content":"{\"days\":30}","version":8}}`))
+	case r.Method == http.MethodDelete && r.URL.EscapedPath() == policyPath:
+		if r.URL.Query().Get("detach-all") != "true" {
+			t.Errorf("detach-all query = %q", r.URL.RawQuery)
+		}
+		operations.sawDelete = true
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		return false
+	}
+	return true
+}
+
+func handlePolicyMappingTestRequest(t *testing.T, w http.ResponseWriter, r *http.Request, operations *policyTestOperations, policyPath string) bool {
+	switch {
+	case r.Method == http.MethodPut && r.URL.EscapedPath() == policyPath+"/mappings":
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode attachment: %v", err)
+		}
+		target, ok := body["target"].(map[string]any)
+		if !ok || target["type"] != "table-like" {
+			t.Errorf("attachment target = %#v", body["target"])
+		}
+		path, ok := target["path"].([]any)
+		if !ok || !reflect.DeepEqual(path, []any{"db", testSchemaName, testEventName}) {
+			t.Errorf("attachment path = %#v", target["path"])
+		}
+		if params, ok := body["parameters"].(map[string]any); !ok || len(params) != 0 {
+			t.Errorf("attachment parameters = %#v", body["parameters"])
+		}
+		operations.sawAttach = true
+		w.WriteHeader(http.StatusNoContent)
+	case r.Method == http.MethodPost && r.URL.EscapedPath() == policyPath+"/mappings":
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode detachment: %v", err)
+		}
+		operations.sawDetach = true
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		return false
+	}
+	return true
+}
+
+func TestPolicyClientUsesVersionedPolicyAndMappingAPIs(t *testing.T) {
+	t.Parallel()
+	var operations policyTestOperations
+	server := newPolicyTestServer(t, &operations)
 	defer server.Close()
 
 	apiClient, err := NewClient(Config{
 		ManagementURL:      server.URL + "/api/management/v1",
 		CatalogURL:         server.URL + "/api/catalog",
 		NamespaceSeparator: ".",
-		Auth:               AuthConfig{BearerToken: "test-token"},
+		Auth:               AuthConfig{BearerToken: testToken},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := apiClient.CreatePolicy(context.Background(), "warehouse", []string{"db", "schema"}, Policy{
-		Name: "retention", Type: "system.retention", Description: "old", Content: "{}",
+	created, err := apiClient.CreatePolicy(context.Background(), "warehouse", []string{"db", testSchemaName}, Policy{
+		Name: "retention", Type: testPolicyType, Description: "old", Content: "{}",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -341,34 +381,34 @@ func TestPolicyClientUsesVersionedPolicyAndMappingAPIs(t *testing.T) {
 	if created.Version != 0 {
 		t.Fatalf("created policy version = %d, want 0", created.Version)
 	}
-	policy, err := apiClient.GetPolicy(context.Background(), "warehouse", []string{"db", "schema"}, "retention")
+	policy, err := apiClient.GetPolicy(context.Background(), "warehouse", []string{"db", testSchemaName}, "retention")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if policy.Version != 7 || policy.Type != "system.retention" || !policy.Inheritable {
+	if policy.Version != 7 || policy.Type != testPolicyType || !policy.Inheritable {
 		t.Fatalf("policy response = %#v", policy)
 	}
 	policy.Description = "new"
 	policy.Content = `{"days":30}`
-	policy, err = apiClient.UpdatePolicy(context.Background(), "warehouse", []string{"db", "schema"}, policy)
+	policy, err = apiClient.UpdatePolicy(context.Background(), "warehouse", []string{"db", testSchemaName}, policy)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if policy.Version != 8 {
 		t.Fatalf("updated policy version = %d, want 8", policy.Version)
 	}
-	target := PolicyTarget{Type: "table-like", Path: []string{"db", "schema", "events"}}
-	if err := apiClient.AttachPolicy(context.Background(), "warehouse", []string{"db", "schema"}, "retention", target, nil); err != nil {
+	target := PolicyTarget{Type: "table-like", Path: []string{"db", testSchemaName, testEventName}}
+	if err := apiClient.AttachPolicy(context.Background(), "warehouse", []string{"db", testSchemaName}, "retention", target, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := apiClient.DetachPolicy(context.Background(), "warehouse", []string{"db", "schema"}, "retention", target); err != nil {
+	if err := apiClient.DetachPolicy(context.Background(), "warehouse", []string{"db", testSchemaName}, "retention", target); err != nil {
 		t.Fatal(err)
 	}
-	if err := apiClient.DeletePolicy(context.Background(), "warehouse", []string{"db", "schema"}, "retention", true); err != nil {
+	if err := apiClient.DeletePolicy(context.Background(), "warehouse", []string{"db", testSchemaName}, "retention", true); err != nil {
 		t.Fatal(err)
 	}
-	if !sawCreate || !sawVersion || !sawAttach || !sawDetach || !sawDelete {
-		t.Fatalf("observed create=%t version=%t attach=%t detach=%t delete=%t", sawCreate, sawVersion, sawAttach, sawDetach, sawDelete)
+	if !operations.sawCreate || !operations.sawVersion || !operations.sawAttach || !operations.sawDetach || !operations.sawDelete {
+		t.Fatalf("observed create=%t version=%t attach=%t detach=%t delete=%t", operations.sawCreate, operations.sawVersion, operations.sawAttach, operations.sawDetach, operations.sawDelete)
 	}
 }
 
@@ -377,7 +417,7 @@ func TestPolicyClientRequiresCatalogURL(t *testing.T) {
 
 	apiClient, err := NewClient(Config{
 		ManagementURL: "https://polaris.example.com/api/management/v1",
-		Auth:          AuthConfig{BearerToken: "test-token"},
+		Auth:          AuthConfig{BearerToken: testToken},
 	})
 	if err != nil {
 		t.Fatal(err)

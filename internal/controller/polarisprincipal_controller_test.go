@@ -29,8 +29,20 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+)
+
+const (
+	principalTestBearerAuthorization = testBearerAuthorization
+	principalTestManagementPath      = "/api/management/v1/principals/" + testAnalystPrincipalName
+	principalTestGeneratedSecret     = "generated-secret"
+	principalTestRemovedLabel        = "remove"
+	principalTestTrueValue           = "true"
+	principalTestPreserveValue       = "preserve"
+	principalTestUpdatedValue        = "updated"
+	principalTestValue               = "value"
 )
 
 func TestPolarisPrincipalCreatesAndExplicitlyRotatesCredentials(t *testing.T) {
@@ -38,17 +50,17 @@ func TestPolarisPrincipalCreatesAndExplicitlyRotatesCredentials(t *testing.T) {
 	var remote *polarisclient.Principal
 	var rotations int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer test-token" {
+		if r.Header.Get("Authorization") != principalTestBearerAuthorization {
 			t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
 		}
 		switch {
-		case r.URL.Path == "/api/management/v1/principals/analyst" && r.Method == http.MethodGet:
+		case r.URL.Path == principalTestManagementPath && r.Method == http.MethodGet:
 			if remote == nil {
 				http.NotFound(w, r)
 				return
 			}
 			_ = json.NewEncoder(w).Encode(remote)
-		case r.URL.Path == "/api/management/v1/principals/analyst" && r.Method == http.MethodPut:
+		case r.URL.Path == principalTestManagementPath && r.Method == http.MethodPut:
 			var body struct {
 				CurrentEntityVersion int64             `json:"currentEntityVersion"`
 				Properties           map[string]string `json:"properties"`
@@ -63,7 +75,7 @@ func TestPolarisPrincipalCreatesAndExplicitlyRotatesCredentials(t *testing.T) {
 			remote.Properties = body.Properties
 			remote.EntityVersion++
 			_ = json.NewEncoder(w).Encode(remote)
-		case r.URL.Path == "/api/management/v1/principals/analyst" && r.Method == http.MethodDelete:
+		case r.URL.Path == principalTestManagementPath && r.Method == http.MethodDelete:
 			remote = nil
 			w.WriteHeader(http.StatusNoContent)
 		case r.URL.Path == "/api/management/v1/principals" && r.Method == http.MethodPost:
@@ -78,14 +90,14 @@ func TestPolarisPrincipalCreatesAndExplicitlyRotatesCredentials(t *testing.T) {
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(polarisclient.PrincipalWithCredentials{
 				Principal:   *remote,
-				Credentials: polarisclient.PrincipalCredentials{ClientID: "generated-id", ClientSecret: "generated-secret"},
+				Credentials: polarisclient.PrincipalCredentials{ClientID: testGeneratedClientID, ClientSecret: principalTestGeneratedSecret},
 			})
-		case r.URL.Path == "/api/management/v1/principals/analyst/rotate" && r.Method == http.MethodPost:
+		case r.URL.Path == principalTestManagementPath+"/rotate" && r.Method == http.MethodPost:
 			rotations++
 			remote.EntityVersion++
 			_ = json.NewEncoder(w).Encode(polarisclient.PrincipalWithCredentials{
 				Principal:   *remote,
-				Credentials: polarisclient.PrincipalCredentials{ClientID: "rotated-id", ClientSecret: "rotated-secret"},
+				Credentials: polarisclient.PrincipalCredentials{ClientID: "rotated-id", ClientSecret: testRotatedSecretValue},
 			})
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
@@ -102,29 +114,20 @@ func TestPolarisPrincipalCreatesAndExplicitlyRotatesCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	connection := &polarisv1alpha1.PolarisConnection{
-		ObjectMeta: metav1.ObjectMeta{Name: "remote", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: testRemoteConnectionName, Namespace: testDefaultNamespace},
 		Spec: polarisv1alpha1.PolarisConnectionSpec{
 			ManagementURL: server.URL + "/api/management/v1",
 			Auth: polarisv1alpha1.PolarisConnectionAuth{BearerTokenSecretRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: "auth"}, Key: "token",
+				LocalObjectReference: corev1.LocalObjectReference{Name: testAuthSecretName}, Key: testTokenKey,
 			}},
 		},
 	}
-	authSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: "default"}, Data: map[string][]byte{"token": []byte("test-token")}}
+	authSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: testAuthSecretName, Namespace: testDefaultNamespace}, Data: map[string][]byte{testTokenKey: []byte("test-token")}}
 	principal := &polarisv1alpha1.PolarisPrincipal{
-		ObjectMeta: metav1.ObjectMeta{Name: "analyst", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: testAnalystPrincipalName, Namespace: testDefaultNamespace},
 		Spec: polarisv1alpha1.PolarisPrincipalSpec{
-			ConnectionRef: "remote", PrincipalName: "analyst", CredentialsSecretName: "analyst-auth",
-			CredentialsSecretTemplate: &polarisv1alpha1.PolarisPrincipalSecretTemplate{
-				Metadata: &polarisv1alpha1.PolarisPrincipalSecretTemplateMetadata{
-					Labels: map[string]string{"template-label": "old", "removed-label": "remove"},
-					Annotations: map[string]string{
-						"reflector.v1.k8s.emberstack.com/reflection-allowed":            "true",
-						"reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces": "analytics",
-						"template.example.com/removed":                                  "remove",
-					},
-				},
-			},
+			ConnectionRef: testRemoteConnectionName, PrincipalName: testAnalystPrincipalName, CredentialsSecretName: testAnalystCredentialsSecret,
+			CredentialsSecretTemplate: principalTestSecretTemplate(),
 		},
 	}
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).
@@ -133,32 +136,64 @@ func TestPolarisPrincipalCreatesAndExplicitlyRotatesCredentials(t *testing.T) {
 	reconciler := &PolarisPrincipalReconciler{Client: k8sClient, Scheme: scheme}
 	request := reconcile.Request{NamespacedName: types.NamespacedName{Namespace: principal.Namespace, Name: principal.Name}}
 
+	assertPrincipalCreation(t, ctx, k8sClient, reconciler, request, &remote, &rotations)
+	assertPrincipalTemplateLifecycle(t, ctx, k8sClient, reconciler, request)
+	assertPrincipalPropertiesUpdated(t, ctx, k8sClient, reconciler, request, &remote)
+	assertPrincipalRotation(t, ctx, k8sClient, reconciler, request, &rotations)
+	assertPrincipalTemplateRemoval(t, ctx, k8sClient, reconciler, request)
+	assertPrincipalDeleted(t, ctx, k8sClient, reconciler, request, &remote, &rotations)
+}
+
+func assertPrincipalCreation(
+	t *testing.T,
+	ctx context.Context,
+	k8sClient client.Client,
+	reconciler *PolarisPrincipalReconciler,
+	request reconcile.Request,
+	remote **polarisclient.Principal,
+	rotations *int,
+) {
+	t.Helper()
 	for range 2 {
 		if _, err := reconciler.Reconcile(ctx, request); err != nil {
 			t.Fatalf("initial reconcile: %v", err)
 		}
 	}
-	if remote == nil || remote.Name != "analyst" {
-		t.Fatalf("remote principal = %#v", remote)
+	if *remote == nil || (*remote).Name != testAnalystPrincipalName {
+		t.Fatalf("remote principal = %#v", *remote)
 	}
-	if rotations != 0 {
-		t.Fatalf("routine reconciliation rotated credentials %d times", rotations)
+	if *rotations != 0 {
+		t.Fatalf("routine reconciliation rotated credentials %d times", *rotations)
 	}
 	secret := &corev1.Secret{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "analyst-auth"}, secret); err != nil {
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testDefaultNamespace, Name: testAnalystCredentialsSecret}, secret); err != nil {
 		t.Fatal(err)
 	}
-	if string(secret.Data["client-id"]) != "generated-id" || string(secret.Data["client-secret"]) != "generated-secret" {
+	if string(secret.Data[clientIDSecretKey]) != testGeneratedClientID || string(secret.Data[clientSecretSecretKey]) != principalTestGeneratedSecret {
 		t.Fatalf("creation credentials were not persisted: %#v", secret.Data)
 	}
-	if secret.Labels["template-label"] != "old" || secret.Labels["removed-label"] != "remove" ||
-		secret.Annotations["reflector.v1.k8s.emberstack.com/reflection-allowed"] != "true" ||
-		secret.Annotations["reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces"] != "analytics" {
+	if secret.Labels["template-label"] != testOldTemplateValue || secret.Labels["removed-label"] != principalTestRemovedLabel ||
+		secret.Annotations["reflector.v1.k8s.emberstack.com/reflection-allowed"] != principalTestTrueValue ||
+		secret.Annotations["reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces"] != testAnalyticsNamespace {
 		t.Fatalf("credentials Secret template was not applied at creation: labels=%v annotations=%v", secret.Labels, secret.Annotations)
 	}
+}
 
-	secret.Labels = map[string]string{"external-label": "preserve"}
-	secret.Annotations = map[string]string{"external.example.com/keep": "preserve"}
+func assertPrincipalTemplateLifecycle(
+	t *testing.T,
+	ctx context.Context,
+	k8sClient client.Client,
+	reconciler *PolarisPrincipalReconciler,
+	request reconcile.Request,
+) {
+	t.Helper()
+	secret := &corev1.Secret{}
+	secretKey := types.NamespacedName{Namespace: testDefaultNamespace, Name: testAnalystCredentialsSecret}
+	if err := k8sClient.Get(ctx, secretKey, secret); err != nil {
+		t.Fatal(err)
+	}
+	secret.Labels = map[string]string{"external-label": principalTestPreserveValue}
+	secret.Annotations = map[string]string{"external.example.com/keep": principalTestPreserveValue}
 	if err := k8sClient.Update(ctx, secret); err != nil {
 		t.Fatalf("add external Secret metadata: %v", err)
 	}
@@ -167,44 +202,31 @@ func TestPolarisPrincipalCreatesAndExplicitlyRotatesCredentials(t *testing.T) {
 	if err := k8sClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
-	stored.Spec.CredentialsSecretTemplate = &polarisv1alpha1.PolarisPrincipalSecretTemplate{
-		Metadata: &polarisv1alpha1.PolarisPrincipalSecretTemplateMetadata{
-			Labels: map[string]string{
-				"template-label": "old",
-				"removed-label":  "remove",
-			},
-			Annotations: map[string]string{
-				"reflector.v1.k8s.emberstack.com/reflection-allowed":            "true",
-				"reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces": "analytics",
-				"template.example.com/removed":                                  "remove",
-			},
-		},
-	}
+	stored.Spec.CredentialsSecretTemplate = principalTestSecretTemplate()
 	if err := k8sClient.Update(ctx, stored); err != nil {
 		t.Fatalf("set credentials Secret template: %v", err)
 	}
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("apply credentials Secret template: %v", err)
 	}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "analyst-auth"}, secret); err != nil {
+	if err := k8sClient.Get(ctx, secretKey, secret); err != nil {
 		t.Fatal(err)
 	}
-	if secret.Labels["template-label"] != "old" || secret.Labels["removed-label"] != "remove" ||
-		secret.Labels["external-label"] != "preserve" ||
-		secret.Annotations["reflector.v1.k8s.emberstack.com/reflection-allowed"] != "true" ||
-		secret.Annotations["reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces"] != "analytics" ||
-		secret.Annotations["external.example.com/keep"] != "preserve" {
+	if secret.Labels["template-label"] != testOldTemplateValue || secret.Labels["removed-label"] != principalTestRemovedLabel ||
+		secret.Labels["external-label"] != principalTestPreserveValue ||
+		secret.Annotations["reflector.v1.k8s.emberstack.com/reflection-allowed"] != principalTestTrueValue ||
+		secret.Annotations["reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces"] != testAnalyticsNamespace ||
+		secret.Annotations["external.example.com/keep"] != principalTestPreserveValue {
 		t.Fatalf("credentials Secret template metadata was not applied without clobbering external metadata: labels=%v annotations=%v", secret.Labels, secret.Annotations)
 	}
 
-	stored = &polarisv1alpha1.PolarisPrincipal{}
 	if err := k8sClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
 	stored.Spec.CredentialsSecretTemplate.Metadata = &polarisv1alpha1.PolarisPrincipalSecretTemplateMetadata{
-		Labels: map[string]string{"template-label": "updated"},
+		Labels: map[string]string{"template-label": principalTestUpdatedValue},
 		Annotations: map[string]string{
-			"template.example.com/updated": "value",
+			"template.example.com/updated": principalTestValue,
 		},
 	}
 	if err := k8sClient.Update(ctx, stored); err != nil {
@@ -213,45 +235,66 @@ func TestPolarisPrincipalCreatesAndExplicitlyRotatesCredentials(t *testing.T) {
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("reconcile updated credentials Secret template: %v", err)
 	}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "analyst-auth"}, secret); err != nil {
+	if err := k8sClient.Get(ctx, secretKey, secret); err != nil {
 		t.Fatal(err)
 	}
-	if secret.Labels["template-label"] != "updated" || secret.Labels["removed-label"] != "" ||
-		secret.Labels["external-label"] != "preserve" ||
+	if secret.Labels["template-label"] != principalTestUpdatedValue || secret.Labels["removed-label"] != "" ||
+		secret.Labels["external-label"] != principalTestPreserveValue ||
 		secret.Annotations["reflector.v1.k8s.emberstack.com/reflection-allowed"] != "" ||
 		secret.Annotations["reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces"] != "" ||
 		secret.Annotations["template.example.com/removed"] != "" ||
-		secret.Annotations["template.example.com/updated"] != "value" ||
-		secret.Annotations["external.example.com/keep"] != "preserve" ||
-		string(secret.Data["client-id"]) != "generated-id" ||
-		string(secret.Data["client-secret"]) != "generated-secret" {
+		secret.Annotations["template.example.com/updated"] != principalTestValue ||
+		secret.Annotations["external.example.com/keep"] != principalTestPreserveValue ||
+		string(secret.Data[clientIDSecretKey]) != testGeneratedClientID ||
+		string(secret.Data[clientSecretSecretKey]) != principalTestGeneratedSecret {
 		t.Fatalf("credentials Secret template update did not preserve data and unrelated metadata while removing stale managed keys: labels=%v annotations=%v data=%v", secret.Labels, secret.Annotations, secret.Data)
 	}
 	owner := metav1.GetControllerOf(secret)
-	if owner == nil || owner.Kind != "PolarisPrincipal" || owner.Name != principal.Name {
+	if owner == nil || owner.Kind != "PolarisPrincipal" || owner.Name != testAnalystPrincipalName {
 		t.Fatalf("credentials Secret controller owner = %#v", owner)
 	}
-	stored = &polarisv1alpha1.PolarisPrincipal{}
+}
+
+func principalTestSecretTemplate() *polarisv1alpha1.PolarisPrincipalSecretTemplate {
+	return &polarisv1alpha1.PolarisPrincipalSecretTemplate{
+		Metadata: &polarisv1alpha1.PolarisPrincipalSecretTemplateMetadata{
+			Labels: map[string]string{
+				"template-label": testOldTemplateValue,
+				"removed-label":  principalTestRemovedLabel,
+			},
+			Annotations: map[string]string{
+				"reflector.v1.k8s.emberstack.com/reflection-allowed":            principalTestTrueValue,
+				"reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces": testAnalyticsNamespace,
+				"template.example.com/removed":                                  principalTestRemovedLabel,
+			},
+		},
+	}
+}
+
+func assertPrincipalPropertiesUpdated(t *testing.T, ctx context.Context, k8sClient client.Client, reconciler *PolarisPrincipalReconciler, request reconcile.Request, remote **polarisclient.Principal) {
+	t.Helper()
+	stored := &polarisv1alpha1.PolarisPrincipal{}
 	if err := k8sClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
-
-	stored.Spec.Properties = map[string]string{"description": "updated identity"}
+	stored.Spec.Properties = map[string]string{testDescriptionProperty: "updated identity"}
 	if err := k8sClient.Update(ctx, stored); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("property update reconcile: %v", err)
 	}
-	if remote.Properties["description"] != "updated identity" {
-		t.Fatalf("updated remote properties = %#v", remote.Properties)
+	if (*remote).Properties[testDescriptionProperty] != "updated identity" {
+		t.Fatalf("updated remote properties = %#v", (*remote).Properties)
 	}
+}
 
-	stored = &polarisv1alpha1.PolarisPrincipal{}
+func assertPrincipalRotation(t *testing.T, ctx context.Context, k8sClient client.Client, reconciler *PolarisPrincipalReconciler, request reconcile.Request, rotations *int) {
+	t.Helper()
+	stored := &polarisv1alpha1.PolarisPrincipal{}
 	if err := k8sClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
-
 	rotationID := int64(1)
 	stored.Spec.CredentialRotationRequestID = &rotationID
 	if err := k8sClient.Update(ctx, stored); err != nil {
@@ -260,18 +303,19 @@ func TestPolarisPrincipalCreatesAndExplicitlyRotatesCredentials(t *testing.T) {
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("rotation reconcile: %v", err)
 	}
-	if rotations != 1 {
-		t.Fatalf("rotation requests = %d, want 1", rotations)
+	if *rotations != 1 {
+		t.Fatalf("rotation requests = %d, want 1", *rotations)
 	}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "analyst-auth"}, secret); err != nil {
+	secret := &corev1.Secret{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testDefaultNamespace, Name: testAnalystCredentialsSecret}, secret); err != nil {
 		t.Fatal(err)
 	}
-	if string(secret.Data["client-id"]) != "rotated-id" || string(secret.Data["client-secret"]) != "rotated-secret" {
+	if string(secret.Data[clientIDSecretKey]) != "rotated-id" || string(secret.Data[clientSecretSecretKey]) != testRotatedSecretValue {
 		t.Fatalf("rotated credentials were not persisted: %#v", secret.Data)
 	}
-	if secret.Labels["template-label"] != "updated" || secret.Labels["external-label"] != "preserve" ||
-		secret.Annotations["template.example.com/updated"] != "value" ||
-		secret.Annotations["external.example.com/keep"] != "preserve" {
+	if secret.Labels["template-label"] != principalTestUpdatedValue || secret.Labels["external-label"] != principalTestPreserveValue ||
+		secret.Annotations["template.example.com/updated"] != principalTestValue ||
+		secret.Annotations["external.example.com/keep"] != principalTestPreserveValue {
 		t.Fatalf("credential rotation lost credentials Secret metadata: labels=%v annotations=%v", secret.Labels, secret.Annotations)
 	}
 	if err := k8sClient.Get(ctx, request.NamespacedName, stored); err != nil {
@@ -281,9 +325,17 @@ func TestPolarisPrincipalCreatesAndExplicitlyRotatesCredentials(t *testing.T) {
 		t.Fatalf("last rotation ID = %d", stored.Status.LastCredentialRotationRequestID)
 	}
 	for _, condition := range stored.Status.Conditions {
-		if condition.Message == "generated-secret" || condition.Message == "rotated-secret" {
+		if condition.Message == principalTestGeneratedSecret || condition.Message == testRotatedSecretValue {
 			t.Fatal("credential leaked into status")
 		}
+	}
+}
+
+func assertPrincipalTemplateRemoval(t *testing.T, ctx context.Context, k8sClient client.Client, reconciler *PolarisPrincipalReconciler, request reconcile.Request) {
+	t.Helper()
+	stored := &polarisv1alpha1.PolarisPrincipal{}
+	if err := k8sClient.Get(ctx, request.NamespacedName, stored); err != nil {
+		t.Fatal(err)
 	}
 	stored.Spec.CredentialsSecretTemplate = nil
 	if err := k8sClient.Update(ctx, stored); err != nil {
@@ -292,22 +344,27 @@ func TestPolarisPrincipalCreatesAndExplicitlyRotatesCredentials(t *testing.T) {
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("reconcile removed credentials Secret template: %v", err)
 	}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "analyst-auth"}, secret); err != nil {
+	secret := &corev1.Secret{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: testDefaultNamespace, Name: testAnalystCredentialsSecret}, secret); err != nil {
 		t.Fatal(err)
 	}
-	if secret.Labels["template-label"] != "" || secret.Labels["external-label"] != "preserve" ||
+	if secret.Labels["template-label"] != "" || secret.Labels["external-label"] != principalTestPreserveValue ||
 		secret.Annotations["template.example.com/updated"] != "" ||
-		secret.Annotations["external.example.com/keep"] != "preserve" ||
-		string(secret.Data["client-secret"]) != "rotated-secret" {
+		secret.Annotations["external.example.com/keep"] != principalTestPreserveValue ||
+		string(secret.Data[clientSecretSecretKey]) != testRotatedSecretValue {
 		t.Fatalf("removing the template did not clear only template-managed metadata: labels=%v annotations=%v", secret.Labels, secret.Annotations)
 	}
+}
 
+func assertPrincipalDeleted(t *testing.T, ctx context.Context, k8sClient client.Client, reconciler *PolarisPrincipalReconciler, request reconcile.Request, remote **polarisclient.Principal, rotations *int) {
+	t.Helper()
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("steady-state reconcile after rotation: %v", err)
 	}
-	if rotations != 1 {
-		t.Fatalf("steady-state reconciliation retried rotation: %d", rotations)
+	if *rotations != 1 {
+		t.Fatalf("steady-state reconciliation retried rotation: %d", *rotations)
 	}
+	stored := &polarisv1alpha1.PolarisPrincipal{}
 	if err := k8sClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +374,7 @@ func TestPolarisPrincipalCreatesAndExplicitlyRotatesCredentials(t *testing.T) {
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("delete reconcile: %v", err)
 	}
-	if remote != nil {
-		t.Fatalf("remote principal was not deleted: %#v", remote)
+	if *remote != nil {
+		t.Fatalf("remote principal was not deleted: %#v", *remote)
 	}
 }

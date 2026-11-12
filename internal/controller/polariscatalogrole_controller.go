@@ -40,7 +40,7 @@ import (
 
 const (
 	catalogRoleFinalizer          = "polaris.apache.org/catalog-role-cleanup"
-	catalogRoleReadyConditionType = "Ready"
+	catalogRoleReadyConditionType = readyConditionType
 	catalogRoleRequeueAfter       = 30 * time.Second
 )
 
@@ -73,7 +73,7 @@ func (r *PolarisCatalogRoleReconciler) Reconcile(ctx context.Context, req ctrl.R
 		if err := r.Update(ctx, role); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{}, nil
 	}
 
 	if role.Status.ObservedCatalogRef == "" {
@@ -88,7 +88,7 @@ func (r *PolarisCatalogRoleReconciler) Reconcile(ctx context.Context, req ctrl.R
 		if err := r.Status().Update(ctx, role); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{}, nil
 	}
 	if role.Spec.CatalogRef != role.Status.ObservedCatalogRef || role.Spec.CatalogRoleName != role.Status.ObservedRoleName {
 		return r.catalogRoleFailure(ctx, role, "IdentityChangeNotAllowed",

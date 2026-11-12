@@ -26,13 +26,19 @@ import (
 	"testing"
 )
 
+const (
+	genericTestBearerToken  = "test-token"
+	genericTestSchema       = "schema"
+	genericTestCurrentTable = "events/current"
+)
+
 func TestGenericTableClientUsesPolarisBetaAPIAndDropsSensitiveConfig(t *testing.T) {
 	t.Parallel()
 	const collectionPath = "/api/catalog/polaris/v1/warehouse/namespaces/db.schema/generic-tables"
 	const tablePath = collectionPath + "/events%2Fcurrent"
 	var created, deleted bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if got := req.Header.Get("Authorization"); got != "Bearer test-token" {
+		if got := req.Header.Get("Authorization"); got != "Bearer "+genericTestBearerToken {
 			t.Errorf("Authorization = %q", got)
 		}
 		switch {
@@ -41,7 +47,7 @@ func TestGenericTableClientUsesPolarisBetaAPIAndDropsSensitiveConfig(t *testing.
 			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 				t.Errorf("decode generic table create: %v", err)
 			}
-			if body["name"] != "events/current" || body["format"] != "delta" || body["base-location"] != "s3://warehouse/events" {
+			if body["name"] != genericTestCurrentTable || body["format"] != "delta" || body["base-location"] != "s3://warehouse/events" {
 				t.Errorf("create body = %#v", body)
 			}
 			created = true
@@ -60,24 +66,24 @@ func TestGenericTableClientUsesPolarisBetaAPIAndDropsSensitiveConfig(t *testing.
 
 	base, err := NewClient(Config{
 		ManagementURL: server.URL + "/management", CatalogURL: server.URL + "/api/catalog",
-		NamespaceSeparator: ".", Auth: AuthConfig{BearerToken: "test-token"},
+		NamespaceSeparator: ".", Auth: AuthConfig{BearerToken: genericTestBearerToken},
 	})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 	generic := NewGenericTableClient(base)
-	namespace := []string{"db", "schema"}
+	namespace := []string{"db", genericTestSchema}
 	createdTable, err := generic.CreateTable(context.Background(), "warehouse", namespace, GenericTable{
-		Name: "events/current", Format: "delta", BaseLocation: "s3://warehouse/events",
+		Name: genericTestCurrentTable, Format: "delta", BaseLocation: "s3://warehouse/events",
 	})
-	if err != nil || createdTable.Name != "events/current" {
+	if err != nil || createdTable.Name != genericTestCurrentTable {
 		t.Fatalf("CreateTable() = %#v, %v", createdTable, err)
 	}
-	loadedTable, err := generic.GetTable(context.Background(), "warehouse", namespace, "events/current")
+	loadedTable, err := generic.GetTable(context.Background(), "warehouse", namespace, genericTestCurrentTable)
 	if err != nil || !reflect.DeepEqual(loadedTable, createdTable) {
 		t.Fatalf("GetTable() = %#v, %v; want %#v", loadedTable, err, createdTable)
 	}
-	if err := generic.DeleteTable(context.Background(), "warehouse", namespace, "events/current"); err != nil {
+	if err := generic.DeleteTable(context.Background(), "warehouse", namespace, genericTestCurrentTable); err != nil {
 		t.Fatalf("DeleteTable() error = %v", err)
 	}
 	if !created || !deleted {
@@ -93,7 +99,7 @@ func TestGenericTableClientClassifiesNotImplemented(t *testing.T) {
 	defer server.Close()
 	base, err := NewClient(Config{
 		ManagementURL: server.URL + "/management", CatalogURL: server.URL + "/api/catalog",
-		Auth: AuthConfig{BearerToken: "test-token"},
+		Auth: AuthConfig{BearerToken: genericTestBearerToken},
 	})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)

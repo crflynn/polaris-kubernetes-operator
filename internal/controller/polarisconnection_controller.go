@@ -40,9 +40,7 @@ import (
 	polarisclient "github.com/apache/polaris-kubernetes-operator/internal/polaris"
 )
 
-const (
-	connectionRequeueAfter = 30 * time.Second
-)
+const connectionRequeueAfter = 30 * time.Second
 
 // PolarisConnectionReconciler reconciles a PolarisConnection object.
 type PolarisConnectionReconciler struct {
@@ -142,11 +140,11 @@ func (r *PolarisConnectionReconciler) readAuth(ctx context.Context, connection *
 		}
 		clientIDKey := credentials.ClientIDKey
 		if clientIDKey == "" {
-			clientIDKey = "client-id"
+			clientIDKey = clientIDSecretKey
 		}
 		clientSecretKey := credentials.ClientSecretKey
 		if clientSecretKey == "" {
-			clientSecretKey = "client-secret"
+			clientSecretKey = clientSecretSecretKey
 		}
 		clientID, err := secretValue(secret, clientIDKey)
 		if err != nil {

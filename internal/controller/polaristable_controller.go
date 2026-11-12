@@ -69,7 +69,7 @@ func (r *PolarisTableReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 		return ctrl.Result{}, err
 	}
-	if !meta.IsStatusConditionTrue(catalog.Status.Conditions, "Ready") {
+	if !meta.IsStatusConditionTrue(catalog.Status.Conditions, catalogReadyConditionType) {
 		return r.tableFailure(ctx, table, "CatalogNotReady", errors.New("referenced PolarisCatalog is not Ready"))
 	}
 
@@ -105,14 +105,14 @@ func (r *PolarisTableReconciler) Reconcile(ctx context.Context, req ctrl.Request
 			if err := r.Update(ctx, table); err != nil {
 				return ctrl.Result{}, err
 			}
-			return ctrl.Result{Requeue: true}, nil
+			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
 	} else if controllerutil.ContainsFinalizer(table, polarisTableFinalizer) {
 		controllerutil.RemoveFinalizer(table, polarisTableFinalizer)
 		if err := r.Update(ctx, table); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 	if mode != polarisv1alpha1.PolarisOwnershipObserve && table.Status.RemoteCatalogName != "" &&
 		(table.Status.RemoteCatalogName != catalog.Spec.CatalogName || !slices.Equal(table.Status.RemoteNamespace, table.Spec.Namespace) || table.Status.RemoteTableName != table.Spec.TableName) {
@@ -170,16 +170,16 @@ func (r *PolarisTableReconciler) tableSuccess(ctx context.Context, table *polari
 	table.Status.RemoteMetadataLocation = metadataLocation
 	table.Status.DriftedFields = slices.Clone(drifted)
 	table.Status.LastReconciledTime = &now
-	meta.SetStatusCondition(&table.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, ObservedGeneration: table.Generation, LastTransitionTime: now, Reason: "TableObserved", Message: "Polaris table registration was observed"})
-	driftStatus, driftReason := metav1.ConditionFalse, "NoDrift"
+	meta.SetStatusCondition(&table.Status.Conditions, metav1.Condition{Type: readyConditionType, Status: metav1.ConditionTrue, ObservedGeneration: table.Generation, LastTransitionTime: now, Reason: "TableObserved", Message: "Polaris table registration was observed"})
+	driftStatus, driftReason := metav1.ConditionFalse, noDriftReason
 	driftMessage := "Polaris table registration was observed with no metadataLocation constraint"
 	if table.Spec.MetadataLocation != "" {
 		driftMessage = "Polaris table registration matches the requested metadata location"
 	}
 	if len(drifted) > 0 {
-		driftStatus, driftReason, driftMessage = metav1.ConditionTrue, "DriftDetected", fmt.Sprintf("Polaris table registration differs in %v; the Iceberg metadata commit remains owned by the table engine", drifted)
+		driftStatus, driftReason, driftMessage = metav1.ConditionTrue, driftDetectedReason, fmt.Sprintf("Polaris table registration differs in %v; the Iceberg metadata commit remains owned by the table engine", drifted)
 	}
-	meta.SetStatusCondition(&table.Status.Conditions, metav1.Condition{Type: "Drifted", Status: driftStatus, ObservedGeneration: table.Generation, LastTransitionTime: now, Reason: driftReason, Message: driftMessage})
+	meta.SetStatusCondition(&table.Status.Conditions, metav1.Condition{Type: driftedConditionType, Status: driftStatus, ObservedGeneration: table.Generation, LastTransitionTime: now, Reason: driftReason, Message: driftMessage})
 	if err := r.Status().Update(ctx, table); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -187,7 +187,7 @@ func (r *PolarisTableReconciler) tableSuccess(ctx context.Context, table *polari
 }
 
 func (r *PolarisTableReconciler) tableFailure(ctx context.Context, table *polarisv1alpha1.PolarisTable, reason string, cause error) (ctrl.Result, error) {
-	meta.SetStatusCondition(&table.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionFalse, ObservedGeneration: table.Generation, LastTransitionTime: metav1.Now(), Reason: reason, Message: sanitizeErrorMessage(cause)})
+	meta.SetStatusCondition(&table.Status.Conditions, metav1.Condition{Type: readyConditionType, Status: metav1.ConditionFalse, ObservedGeneration: table.Generation, LastTransitionTime: metav1.Now(), Reason: reason, Message: sanitizeErrorMessage(cause)})
 	table.Status.ObservedGeneration = table.Generation
 	if err := r.Status().Update(ctx, table); err != nil {
 		return ctrl.Result{}, err

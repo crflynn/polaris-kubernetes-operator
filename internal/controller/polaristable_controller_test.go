@@ -36,13 +36,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+const testDesiredTableMetadataLocation = "s3://warehouse/desired.metadata.json"
+
 func TestPolarisTableObserveReportsMetadataDriftWithoutMutation(t *testing.T) {
 	ctx := context.Background()
-	const tablePath = "/api/catalog/v1/warehouse/namespaces/db.schema/tables/events"
+	const tablePath = "/api/catalog/v1/warehouse/namespaces/db.schema/tables/" + testEventsTableName
 	var mutations int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Method == http.MethodGet && req.URL.EscapedPath() == tablePath {
-			_, _ = w.Write([]byte(`{"metadata-location":"s3://warehouse/remote.metadata.json"}`))
+			_ = json.NewEncoder(w).Encode(map[string]string{"metadata-location": "s3://warehouse/remote.metadata.json"})
 			return
 		}
 		mutations++
@@ -51,7 +53,7 @@ func TestPolarisTableObserveReportsMetadataDriftWithoutMutation(t *testing.T) {
 	defer server.Close()
 
 	table := testPolarisTable("Observe", "Orphan")
-	table.Spec.MetadataLocation = "s3://warehouse/desired.metadata.json"
+	table.Spec.MetadataLocation = testDesiredTableMetadataLocation
 	reconciler, kubeClient, request := newTableTestReconciler(t, server, table)
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("observe reconcile: %v", err)
@@ -60,16 +62,16 @@ func TestPolarisTableObserveReportsMetadataDriftWithoutMutation(t *testing.T) {
 	if err := kubeClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
-	if mutations != 0 || !meta.IsStatusConditionTrue(stored.Status.Conditions, "Ready") ||
+	if mutations != 0 || !meta.IsStatusConditionTrue(stored.Status.Conditions, readyConditionType) ||
 		!meta.IsStatusConditionTrue(stored.Status.Conditions, "Drifted") ||
-		!slices.Equal(stored.Status.DriftedFields, []string{"metadataLocation"}) {
+		!slices.Equal(stored.Status.DriftedFields, []string{testMetadataLocationProperty}) {
 		t.Fatalf("observe result: mutations=%d status=%#v", mutations, stored.Status)
 	}
 }
 
 func TestPolarisTableEnforceRegistersOnlyWhenAbsentAndNeverOverwrites(t *testing.T) {
 	ctx := context.Background()
-	const tablePath = "/api/catalog/v1/warehouse/namespaces/db.schema/tables/events"
+	const tablePath = "/api/catalog/v1/warehouse/namespaces/db.schema/tables/" + testEventsTableName
 	const registerPath = "/api/catalog/v1/warehouse/namespaces/db.schema/register"
 	registered := false
 	var registerRequests int
@@ -86,7 +88,7 @@ func TestPolarisTableEnforceRegistersOnlyWhenAbsentAndNeverOverwrites(t *testing
 			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
 				t.Errorf("decode registration request: %v", err)
 			}
-			if body["name"] != "events" || body["metadata-location"] != "s3://warehouse/desired.metadata.json" {
+			if body["name"] != testEventsTableName || body["metadata-location"] != testDesiredTableMetadataLocation {
 				t.Errorf("registration request = %#v", body)
 			}
 			if _, exists := body["overwrite"]; exists {
@@ -94,7 +96,7 @@ func TestPolarisTableEnforceRegistersOnlyWhenAbsentAndNeverOverwrites(t *testing
 			}
 			registerRequests++
 			registered = true
-			_, _ = w.Write([]byte(`{"metadata-location":"s3://warehouse/desired.metadata.json"}`))
+			_ = json.NewEncoder(w).Encode(map[string]string{"metadata-location": testDesiredTableMetadataLocation})
 		default:
 			t.Errorf("unexpected request %s %s", req.Method, req.URL.RequestURI())
 			http.Error(w, "unexpected request", http.StatusBadRequest)
@@ -103,7 +105,7 @@ func TestPolarisTableEnforceRegistersOnlyWhenAbsentAndNeverOverwrites(t *testing
 	defer server.Close()
 
 	table := testPolarisTable("Enforce", "Orphan")
-	table.Spec.MetadataLocation = "s3://warehouse/desired.metadata.json"
+	table.Spec.MetadataLocation = testDesiredTableMetadataLocation
 	reconciler, kubeClient, request := newTableTestReconciler(t, server, table)
 	if _, err := reconciler.Reconcile(ctx, request); err != nil {
 		t.Fatalf("register reconcile: %v", err)
@@ -112,7 +114,7 @@ func TestPolarisTableEnforceRegistersOnlyWhenAbsentAndNeverOverwrites(t *testing
 	if err := kubeClient.Get(ctx, request.NamespacedName, stored); err != nil {
 		t.Fatal(err)
 	}
-	if !registered || registerRequests != 1 || !meta.IsStatusConditionTrue(stored.Status.Conditions, "Ready") {
+	if !registered || registerRequests != 1 || !meta.IsStatusConditionTrue(stored.Status.Conditions, readyConditionType) {
 		t.Fatalf("registration result: registered=%t requests=%d status=%#v", registered, registerRequests, stored.Status)
 	}
 
@@ -123,7 +125,7 @@ func TestPolarisTableEnforceRegistersOnlyWhenAbsentAndNeverOverwrites(t *testing
 		t.Fatal(err)
 	}
 	if registerRequests != 1 || !meta.IsStatusConditionTrue(stored.Status.Conditions, "Drifted") ||
-		!slices.Equal(stored.Status.DriftedFields, []string{"metadataLocation"}) {
+		!slices.Equal(stored.Status.DriftedFields, []string{testMetadataLocationProperty}) {
 		t.Fatalf("engine change was overwritten or drift missed: requests=%d status=%#v", registerRequests, stored.Status)
 	}
 }
@@ -177,9 +179,9 @@ func TestPolarisTableExplicitUnregisterUsesFinalizer(t *testing.T) {
 
 func testPolarisTable(ownership, deletion string) *polarisv1alpha1.PolarisTable {
 	return &polarisv1alpha1.PolarisTable{
-		ObjectMeta: metav1.ObjectMeta{Name: "events", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: testEventsTableName, Namespace: testDefaultNamespace},
 		Spec: polarisv1alpha1.PolarisTableSpec{
-			CatalogRef: "warehouse", Namespace: []string{"db", "schema"}, TableName: "events",
+			CatalogRef: testWarehouseCatalogName, Namespace: []string{"db", catalogRoleGrantTestSchema}, TableName: testEventsTableName,
 			OwnershipMode:  polarisv1alpha1.PolarisOwnershipMode(ownership),
 			DeletionPolicy: polarisv1alpha1.PolarisDeletionPolicy(deletion),
 		},
@@ -195,21 +197,21 @@ func newTableTestReconciler(t *testing.T, server *httptest.Server, table *polari
 	if err := polarisv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	ready := metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Ready", Message: "ready", LastTransitionTime: metav1.Now()}
+	ready := metav1.Condition{Type: readyConditionType, Status: metav1.ConditionTrue, Reason: readyConditionType, Message: catalogRoleBindingTestReadyMessage, LastTransitionTime: metav1.Now()}
 	connection := &polarisv1alpha1.PolarisConnection{
-		ObjectMeta: metav1.ObjectMeta{Name: "remote", Namespace: table.Namespace},
+		ObjectMeta: metav1.ObjectMeta{Name: testRemoteConnectionName, Namespace: table.Namespace},
 		Spec: polarisv1alpha1.PolarisConnectionSpec{
 			ManagementURL: server.URL + "/api/management/v1", CatalogURL: server.URL + "/api/catalog",
-			Auth: polarisv1alpha1.PolarisConnectionAuth{BearerTokenSecretRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: "auth"}, Key: "token"}},
+			Auth: polarisv1alpha1.PolarisConnectionAuth{BearerTokenSecretRef: &corev1.SecretKeySelector{LocalObjectReference: corev1.LocalObjectReference{Name: testAuthSecretName}, Key: testTokenKey}},
 		},
 		Status: polarisv1alpha1.PolarisConnectionStatus{Conditions: []metav1.Condition{ready}, NamespaceSeparator: "."},
 	}
 	catalog := &polarisv1alpha1.PolarisCatalog{
 		ObjectMeta: metav1.ObjectMeta{Name: table.Spec.CatalogRef, Namespace: table.Namespace},
-		Spec:       polarisv1alpha1.PolarisCatalogSpec{ConnectionRef: connection.Name, CatalogName: "warehouse"},
+		Spec:       polarisv1alpha1.PolarisCatalogSpec{ConnectionRef: connection.Name, CatalogName: testWarehouseCatalogName},
 		Status:     polarisv1alpha1.PolarisCatalogStatus{Conditions: []metav1.Condition{ready}},
 	}
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "auth", Namespace: table.Namespace}, Data: map[string][]byte{"token": []byte("test-token")}}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: testAuthSecretName, Namespace: table.Namespace}, Data: map[string][]byte{testTokenKey: []byte("test-token")}}
 	kubeClient := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(table, &polarisv1alpha1.PolarisCatalog{}, &polarisv1alpha1.PolarisConnection{}).
 		WithObjects(connection, catalog, secret, table).Build()

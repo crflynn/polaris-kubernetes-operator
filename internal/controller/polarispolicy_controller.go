@@ -74,31 +74,11 @@ func (r *PolarisPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if err := r.Update(ctx, policy); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{Requeue: true}, nil
+		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 
 	if policy.Status.ObservedPolicyName == "" {
-		if deleting {
-			controllerutil.RemoveFinalizer(policy, polarisPolicyFinalizer)
-			return ctrl.Result{}, r.Update(ctx, policy)
-		}
-		catalog := &polarisv1alpha1.PolarisCatalog{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: policy.Namespace, Name: policy.Spec.CatalogRef}, catalog); err != nil {
-			return r.policyFailure(ctx, policy, "CatalogNotFound", errors.New("referenced PolarisCatalog was not found"))
-		}
-		if !meta.IsStatusConditionTrue(catalog.Status.Conditions, "Ready") {
-			return r.policyFailure(ctx, policy, "CatalogNotReady", errors.New("referenced PolarisCatalog must be Ready"))
-		}
-		policy.Status.ObservedCatalogRef = policy.Spec.CatalogRef
-		policy.Status.ObservedCatalogName = catalog.Spec.CatalogName
-		policy.Status.ObservedConnectionRef = catalog.Spec.ConnectionRef
-		policy.Status.ObservedNamespace = append([]string(nil), policy.Spec.Namespace...)
-		policy.Status.ObservedPolicyName = policy.Spec.PolicyName
-		policy.Status.ObservedType = policy.Spec.Type
-		if err := r.Status().Update(ctx, policy); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{Requeue: true}, nil
+		return r.recordPolicyIdentity(ctx, policy, deleting)
 	}
 
 	if policy.Spec.CatalogRef != policy.Status.ObservedCatalogRef ||
@@ -114,7 +94,7 @@ func (r *PolarisPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if err := r.Get(ctx, types.NamespacedName{Namespace: policy.Namespace, Name: policy.Status.ObservedCatalogRef}, catalog); err != nil {
 			return r.policyFailure(ctx, policy, "CatalogNotFound", errors.New("recorded PolarisCatalog was not found"))
 		}
-		if !meta.IsStatusConditionTrue(catalog.Status.Conditions, "Ready") {
+		if !meta.IsStatusConditionTrue(catalog.Status.Conditions, readyConditionType) {
 			return r.policyFailure(ctx, policy, "CatalogNotReady", errors.New("referenced PolarisCatalog must remain Ready"))
 		}
 		if catalog.Spec.CatalogName != policy.Status.ObservedCatalogName || catalog.Spec.ConnectionRef != policy.Status.ObservedConnectionRef {
@@ -136,26 +116,57 @@ func (r *PolarisPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	if deleting {
-		bindings := &polarisv1alpha1.PolarisPolicyBindingList{}
-		if err := r.List(ctx, bindings, client.InNamespace(policy.Namespace)); err != nil {
-			return ctrl.Result{}, err
-		}
-		for i := range bindings.Items {
-			binding := &bindings.Items[i]
-			if binding.Spec.PolicyRef == policy.Name || binding.Status.ObservedPolicyRef == policy.Name {
-				return r.policyFailure(ctx, policy, "PolicyBindingsRemain",
-					errors.New("delete PolarisPolicyBinding resources first so their finalizers detach managed mappings"))
-			}
-		}
-		err := apiClient.DeletePolicy(ctx, policy.Status.ObservedCatalogName, policy.Status.ObservedNamespace,
-			policy.Status.ObservedPolicyName, policy.Spec.DetachAllOnDelete)
-		if httpErr, ok := errors.AsType[*polarisclient.HTTPError](err); err != nil && (!ok || httpErr.StatusCode != http.StatusNotFound) {
-			return r.policyFailure(ctx, policy, "RemoteDeleteFailed", err)
-		}
+		return r.deletePolicy(ctx, policy, apiClient)
+	}
+	return r.reconcileRemotePolicy(ctx, policy, apiClient)
+}
+
+func (r *PolarisPolicyReconciler) recordPolicyIdentity(ctx context.Context, policy *polarisv1alpha1.PolarisPolicy, deleting bool) (ctrl.Result, error) {
+	if deleting {
 		controllerutil.RemoveFinalizer(policy, polarisPolicyFinalizer)
 		return ctrl.Result{}, r.Update(ctx, policy)
 	}
+	catalog := &polarisv1alpha1.PolarisCatalog{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: policy.Namespace, Name: policy.Spec.CatalogRef}, catalog); err != nil {
+		return r.policyFailure(ctx, policy, "CatalogNotFound", errors.New("referenced PolarisCatalog was not found"))
+	}
+	if !meta.IsStatusConditionTrue(catalog.Status.Conditions, readyConditionType) {
+		return r.policyFailure(ctx, policy, "CatalogNotReady", errors.New("referenced PolarisCatalog must be Ready"))
+	}
+	policy.Status.ObservedCatalogRef = policy.Spec.CatalogRef
+	policy.Status.ObservedCatalogName = catalog.Spec.CatalogName
+	policy.Status.ObservedConnectionRef = catalog.Spec.ConnectionRef
+	policy.Status.ObservedNamespace = append([]string(nil), policy.Spec.Namespace...)
+	policy.Status.ObservedPolicyName = policy.Spec.PolicyName
+	policy.Status.ObservedType = policy.Spec.Type
+	if err := r.Status().Update(ctx, policy); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: time.Second}, nil
+}
 
+func (r *PolarisPolicyReconciler) deletePolicy(ctx context.Context, policy *polarisv1alpha1.PolarisPolicy, apiClient *polarisclient.Client) (ctrl.Result, error) {
+	bindings := &polarisv1alpha1.PolarisPolicyBindingList{}
+	if err := r.List(ctx, bindings, client.InNamespace(policy.Namespace)); err != nil {
+		return ctrl.Result{}, err
+	}
+	for i := range bindings.Items {
+		binding := &bindings.Items[i]
+		if binding.Spec.PolicyRef == policy.Name || binding.Status.ObservedPolicyRef == policy.Name {
+			return r.policyFailure(ctx, policy, "PolicyBindingsRemain",
+				errors.New("delete PolarisPolicyBinding resources first so their finalizers detach managed mappings"))
+		}
+	}
+	err := apiClient.DeletePolicy(ctx, policy.Status.ObservedCatalogName, policy.Status.ObservedNamespace,
+		policy.Status.ObservedPolicyName, policy.Spec.DetachAllOnDelete)
+	if httpErr, ok := errors.AsType[*polarisclient.HTTPError](err); err != nil && (!ok || httpErr.StatusCode != http.StatusNotFound) {
+		return r.policyFailure(ctx, policy, "RemoteDeleteFailed", err)
+	}
+	controllerutil.RemoveFinalizer(policy, polarisPolicyFinalizer)
+	return ctrl.Result{}, r.Update(ctx, policy)
+}
+
+func (r *PolarisPolicyReconciler) reconcileRemotePolicy(ctx context.Context, policy *polarisv1alpha1.PolarisPolicy, apiClient *polarisclient.Client) (ctrl.Result, error) {
 	remote, err := apiClient.GetPolicy(ctx, policy.Status.ObservedCatalogName, policy.Status.ObservedNamespace, policy.Status.ObservedPolicyName)
 	if httpErr, ok := errors.AsType[*polarisclient.HTTPError](err); err != nil && ok && httpErr.StatusCode == http.StatusNotFound {
 		remote, err = apiClient.CreatePolicy(ctx, policy.Status.ObservedCatalogName, policy.Status.ObservedNamespace, polarisclient.Policy{
@@ -182,7 +193,7 @@ func (r *PolarisPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	policy.Status.Inheritable = remote.Inheritable
 	policy.Status.LastReconciledTime = &now
 	meta.SetStatusCondition(&policy.Status.Conditions, metav1.Condition{
-		Type: "Ready", Status: metav1.ConditionTrue, ObservedGeneration: policy.Generation,
+		Type: readyConditionType, Status: metav1.ConditionTrue, ObservedGeneration: policy.Generation,
 		LastTransitionTime: now, Reason: "PolicyReady", Message: "Polaris policy matches the desired state",
 	})
 	if err := r.Status().Update(ctx, policy); err != nil {
@@ -193,7 +204,7 @@ func (r *PolarisPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 func (r *PolarisPolicyReconciler) policyFailure(ctx context.Context, policy *polarisv1alpha1.PolarisPolicy, reason string, cause error) (ctrl.Result, error) {
 	meta.SetStatusCondition(&policy.Status.Conditions, metav1.Condition{
-		Type: "Ready", Status: metav1.ConditionFalse, ObservedGeneration: policy.Generation,
+		Type: readyConditionType, Status: metav1.ConditionFalse, ObservedGeneration: policy.Generation,
 		LastTransitionTime: metav1.Now(), Reason: reason, Message: cause.Error(),
 	})
 	if err := r.Status().Update(ctx, policy); err != nil {
