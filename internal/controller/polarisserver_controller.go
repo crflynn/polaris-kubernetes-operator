@@ -43,6 +43,8 @@ import (
 
 const polarisServerReadyCondition = "Ready"
 
+const polarisServerCatalogPortName = "http"
+
 // PolarisServerReconciler reconciles the native Kubernetes workload for a PolarisServer.
 type PolarisServerReconciler struct {
 	client.Client
@@ -151,7 +153,7 @@ func (r *PolarisServerReconciler) reconcileDeployment(ctx context.Context, serve
 						Image:           server.Spec.Image,
 						ImagePullPolicy: corev1.PullIfNotPresent,
 						SecurityContext: server.Spec.ContainerSecurityContext,
-						Ports:           []corev1.ContainerPort{{Name: "http", ContainerPort: port, Protocol: corev1.ProtocolTCP}, {Name: "management", ContainerPort: managementPort, Protocol: corev1.ProtocolTCP}},
+						Ports:           []corev1.ContainerPort{{Name: polarisServerCatalogPortName, ContainerPort: port, Protocol: corev1.ProtocolTCP}, {Name: "management", ContainerPort: managementPort, Protocol: corev1.ProtocolTCP}},
 						Env:             server.Spec.Env,
 						EnvFrom:         server.Spec.EnvFrom,
 						Resources:       server.Spec.Resources,
@@ -187,7 +189,7 @@ func (r *PolarisServerReconciler) reconcileService(ctx context.Context, server *
 		service.Spec.Type = desiredPolarisServiceType(server)
 		service.Spec.Selector = labels
 		service.Spec.Ports = []corev1.ServicePort{
-			{Name: "http", Port: port, TargetPort: intstr.FromInt32(port), Protocol: corev1.ProtocolTCP},
+			{Name: polarisServerCatalogPortName, Port: port, TargetPort: intstr.FromInt32(port), Protocol: corev1.ProtocolTCP},
 		}
 		return nil
 	})
@@ -264,7 +266,7 @@ func (r *PolarisServerReconciler) reconcileIngress(ctx context.Context, server *
 						PathType: &pathType,
 						Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{
 							Name: server.Name,
-							Port: networkingv1.ServiceBackendPort{Name: "http"},
+							Port: networkingv1.ServiceBackendPort{Name: polarisServerCatalogPortName},
 						}},
 					}},
 				}},
@@ -317,7 +319,7 @@ func (r *PolarisServerReconciler) reconcileHTTPRoute(ctx context.Context, server
 			path = "/"
 		}
 		pathMatchType := gatewayv1.PathMatchPathPrefix
-		backendPort := gatewayv1.PortNumber(desiredPolarisPort(server))
+		backendPort := desiredPolarisPort(server)
 		route.Labels = polarisServerLabels(server)
 		route.Annotations = config.Annotations
 		route.Spec = gatewayv1.HTTPRouteSpec{

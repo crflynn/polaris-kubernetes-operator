@@ -96,7 +96,7 @@ func TestPolarisPrincipalRoleBindingLifecycle(t *testing.T) {
 		Spec:       polarisv1alpha1.PolarisPrincipalRoleSpec{ConnectionRef: testRemoteConnectionName, RoleName: principalRoleBindingTestAssignedRole},
 	}
 	binding := &polarisv1alpha1.PolarisPrincipalRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: "alice-readers", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "alice-readers", Namespace: testDefaultNamespace},
 		Spec:       polarisv1alpha1.PolarisPrincipalRoleBindingSpec{PrincipalRef: principal.Name, PrincipalRoleRef: role.Name},
 	}
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).

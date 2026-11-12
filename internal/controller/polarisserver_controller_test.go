@@ -29,10 +29,19 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	polarisv1alpha1 "github.com/apache/polaris-kubernetes-operator/api/v1alpha1"
+)
+
+const (
+	polarisServerTestName          = "polaris"
+	polarisServerTestCustomValue   = "custom"
+	polarisServerTestPath          = "/polaris"
+	polarisServerTestParentGateway = "shared-gateway"
+	polarisServerTestHostname      = "polaris.example.test"
 )
 
 func TestPolarisServerReconcilesDeploymentAndService(t *testing.T) {
@@ -44,7 +53,7 @@ func TestPolarisServerReconcilesDeploymentAndService(t *testing.T) {
 	if err := polarisv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	if err := gatewayv1.AddToScheme(scheme); err != nil {
+	if err := gatewayv1.Install(scheme); err != nil {
 		t.Fatal(err)
 	}
 	parentNamespace := gatewayv1.Namespace("gateway-system")
@@ -52,21 +61,21 @@ func TestPolarisServerReconcilesDeploymentAndService(t *testing.T) {
 	port := int32(9000)
 	serviceType := corev1.ServiceTypeNodePort
 	server := &polarisv1alpha1.PolarisServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "polaris", Namespace: "default", UID: types.UID("server-uid")},
+		ObjectMeta: metav1.ObjectMeta{Name: polarisServerTestName, Namespace: testDefaultNamespace, UID: types.UID("server-uid")},
 		Spec: polarisv1alpha1.PolarisServerSpec{
 			Image: "apache/polaris:test", Replicas: &replicas, Port: &port,
-			Service:            polarisv1alpha1.PolarisServerServiceSpec{Type: serviceType, Annotations: map[string]string{"service": "custom"}},
-			PodAnnotations:     map[string]string{"pod": "custom"},
+			Service:            polarisv1alpha1.PolarisServerServiceSpec{Type: serviceType, Annotations: map[string]string{"service": polarisServerTestCustomValue}},
+			PodAnnotations:     map[string]string{"pod": polarisServerTestCustomValue},
 			ServiceAccountName: "polaris-runtime",
 			ImagePullSecrets:   []corev1.LocalObjectReference{{Name: "registry-auth"}},
 			NodeSelector:       map[string]string{"zone": "west"},
 			Volumes:            []corev1.Volume{{Name: "config", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{LocalObjectReference: corev1.LocalObjectReference{Name: "polaris-config"}}}}},
 			VolumeMounts:       []corev1.VolumeMount{{Name: "config", MountPath: "/etc/polaris"}},
-			Ingress:            &polarisv1alpha1.PolarisServerIngressSpec{Host: "polaris.example.test", Path: "/polaris", TLSSecretName: "polaris-tls"},
+			Ingress:            &polarisv1alpha1.PolarisServerIngressSpec{Host: polarisServerTestHostname, Path: polarisServerTestPath, TLSSecretName: "polaris-tls"},
 			HTTPRoute: &polarisv1alpha1.PolarisServerHTTPRouteSpec{
-				ParentRefs: []gatewayv1.ParentReference{{Name: gatewayv1.ObjectName("shared-gateway"), Namespace: &parentNamespace}},
-				Hostnames:  []gatewayv1.Hostname{"polaris.example.test"},
-				Path:       "/polaris",
+				ParentRefs: []gatewayv1.ParentReference{{Name: gatewayv1.ObjectName(polarisServerTestParentGateway), Namespace: &parentNamespace}},
+				Hostnames:  []gatewayv1.Hostname{gatewayv1.Hostname(polarisServerTestHostname)},
+				Path:       polarisServerTestPath,
 			},
 		},
 	}
@@ -83,6 +92,34 @@ func TestPolarisServerReconcilesDeploymentAndService(t *testing.T) {
 		t.Fatal("Reconcile() did not requeue while replicas were not ready")
 	}
 
+	assertPolarisServerDeployment(t, ctx, kubeClient, server)
+	assertPolarisServerServices(t, ctx, kubeClient, server, serviceType, port)
+	assertPolarisServerIngress(t, ctx, kubeClient, server)
+	assertPolarisServerHTTPRoute(t, ctx, kubeClient, server, port)
+
+	ingress := &networkingv1.Ingress{}
+	httpRoute := &gatewayv1.HTTPRoute{}
+	if err := kubeClient.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name}, server); err != nil {
+		t.Fatalf("get PolarisServer before disabling exposure: %v", err)
+	}
+	server.Spec.Ingress = nil
+	server.Spec.HTTPRoute = nil
+	if err := kubeClient.Update(ctx, server); err != nil {
+		t.Fatalf("disable PolarisServer exposure: %v", err)
+	}
+	if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: server.Namespace, Name: server.Name}}); err != nil {
+		t.Fatalf("reconcile after disabling exposure: %v", err)
+	}
+	if err := kubeClient.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name}, ingress); !apierrors.IsNotFound(err) {
+		t.Fatalf("Ingress after disabling spec = %v, want NotFound", err)
+	}
+	if err := kubeClient.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name}, httpRoute); !apierrors.IsNotFound(err) {
+		t.Fatalf("HTTPRoute after disabling spec = %v, want NotFound", err)
+	}
+}
+
+func assertPolarisServerDeployment(t *testing.T, ctx context.Context, kubeClient client.Client, server *polarisv1alpha1.PolarisServer) {
+	t.Helper()
 	deployment := &appsv1.Deployment{}
 	if err := kubeClient.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name}, deployment); err != nil {
 		t.Fatalf("get Deployment: %v", err)
@@ -104,16 +141,19 @@ func TestPolarisServerReconcilesDeploymentAndService(t *testing.T) {
 	if podSpec.ServiceAccountName != "polaris-runtime" || podSpec.NodeSelector["zone"] != "west" ||
 		len(podSpec.ImagePullSecrets) != 1 || podSpec.ImagePullSecrets[0].Name != "registry-auth" ||
 		len(podSpec.Volumes) != 1 || podSpec.Containers[0].VolumeMounts[0].MountPath != "/etc/polaris" ||
-		deployment.Spec.Template.Annotations["pod"] != "custom" {
+		deployment.Spec.Template.Annotations["pod"] != polarisServerTestCustomValue {
 		t.Fatalf("Deployment pod configuration = %#v", podSpec)
 	}
+}
 
+func assertPolarisServerServices(t *testing.T, ctx context.Context, kubeClient client.Client, server *polarisv1alpha1.PolarisServer, serviceType corev1.ServiceType, port int32) {
+	t.Helper()
 	service := &corev1.Service{}
 	if err := kubeClient.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name}, service); err != nil {
 		t.Fatalf("get Service: %v", err)
 	}
 	if service.Spec.Type != serviceType || len(service.Spec.Ports) != 1 ||
-		service.Spec.Ports[0].Port != port || service.Annotations["service"] != "custom" {
+		service.Spec.Ports[0].Port != port || service.Annotations["service"] != polarisServerTestCustomValue {
 		t.Fatalf("Catalog Service spec = type %q, ports %#v, annotations %#v", service.Spec.Type, service.Spec.Ports, service.Annotations)
 	}
 	if controller := metav1.GetControllerOf(service); controller == nil || controller.UID != server.UID {
@@ -128,62 +168,53 @@ func TestPolarisServerReconcilesDeploymentAndService(t *testing.T) {
 		managementService.Spec.Ports[0].Port != 8182 {
 		t.Fatalf("Management Service spec = type %q, ports %#v", managementService.Spec.Type, managementService.Spec.Ports)
 	}
+}
+
+func assertPolarisServerIngress(t *testing.T, ctx context.Context, kubeClient client.Client, server *polarisv1alpha1.PolarisServer) {
+	t.Helper()
 	ingress := &networkingv1.Ingress{}
 	if err := kubeClient.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name}, ingress); err != nil {
 		t.Fatalf("get Ingress: %v", err)
 	}
-	if ingress.Spec.Rules[0].Host != "polaris.example.test" ||
-		ingress.Spec.Rules[0].HTTP.Paths[0].Path != "/polaris" ||
+	if ingress.Spec.Rules[0].Host != polarisServerTestHostname ||
+		ingress.Spec.Rules[0].HTTP.Paths[0].Path != polarisServerTestPath ||
 		ingress.Spec.TLS[0].SecretName != "polaris-tls" {
 		t.Fatalf("Ingress spec = %#v", ingress.Spec)
 	}
-	if ingress.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Name != service.Name ||
-		ingress.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Port.Name != "http" {
-		t.Fatalf("Ingress backend = %#v, want Catalog Service %q", ingress.Spec.Rules[0].HTTP.Paths[0].Backend.Service, service.Name)
+	if ingress.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Name != server.Name ||
+		ingress.Spec.Rules[0].HTTP.Paths[0].Backend.Service.Port.Name != polarisServerCatalogPortName {
+		t.Fatalf("Ingress backend = %#v, want Catalog Service %q", ingress.Spec.Rules[0].HTTP.Paths[0].Backend.Service, server.Name)
 	}
 	if controller := metav1.GetControllerOf(ingress); controller == nil || controller.UID != server.UID {
 		t.Fatalf("Ingress controller owner = %#v, want PolarisServer UID %q", controller, server.UID)
 	}
+}
+
+func assertPolarisServerHTTPRoute(t *testing.T, ctx context.Context, kubeClient client.Client, server *polarisv1alpha1.PolarisServer, port int32) {
+	t.Helper()
 	httpRoute := &gatewayv1.HTTPRoute{}
 	if err := kubeClient.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name}, httpRoute); err != nil {
 		t.Fatalf("get HTTPRoute: %v", err)
 	}
 	if len(httpRoute.Spec.ParentRefs) != 1 ||
-		httpRoute.Spec.ParentRefs[0].Name != gatewayv1.ObjectName("shared-gateway") ||
+		httpRoute.Spec.ParentRefs[0].Name != gatewayv1.ObjectName(polarisServerTestParentGateway) ||
 		len(httpRoute.Spec.Hostnames) != 1 ||
-		httpRoute.Spec.Hostnames[0] != gatewayv1.Hostname("polaris.example.test") {
+		httpRoute.Spec.Hostnames[0] != gatewayv1.Hostname(polarisServerTestHostname) {
 		t.Fatalf("HTTPRoute attachment = %#v", httpRoute.Spec)
 	}
 	rule := httpRoute.Spec.Rules[0]
 	if len(rule.Matches) != 1 || rule.Matches[0].Path == nil ||
-		rule.Matches[0].Path.Value == nil || *rule.Matches[0].Path.Value != "/polaris" ||
+		rule.Matches[0].Path.Value == nil || rule.Matches[0].Path.Type == nil ||
+		*rule.Matches[0].Path.Value != polarisServerTestPath ||
 		*rule.Matches[0].Path.Type != gatewayv1.PathMatchPathPrefix {
 		t.Fatalf("HTTPRoute match = %#v", rule.Matches)
 	}
-	if len(rule.BackendRefs) != 1 || rule.BackendRefs[0].Name != gatewayv1.ObjectName(service.Name) ||
-		rule.BackendRefs[0].Port == nil || int32(*rule.BackendRefs[0].Port) != port {
-		t.Fatalf("HTTPRoute backend = %#v, want Catalog Service %q:%d", rule.BackendRefs, service.Name, port)
+	if len(rule.BackendRefs) != 1 || rule.BackendRefs[0].Name != gatewayv1.ObjectName(server.Name) ||
+		rule.BackendRefs[0].Port == nil || *rule.BackendRefs[0].Port != port {
+		t.Fatalf("HTTPRoute backend = %#v, want Catalog Service %q:%d", rule.BackendRefs, server.Name, port)
 	}
 	if controller := metav1.GetControllerOf(httpRoute); controller == nil || controller.UID != server.UID {
 		t.Fatalf("HTTPRoute controller owner = %#v, want PolarisServer UID %q", controller, server.UID)
-	}
-
-	if err := kubeClient.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name}, server); err != nil {
-		t.Fatalf("get PolarisServer before disabling exposure: %v", err)
-	}
-	server.Spec.Ingress = nil
-	server.Spec.HTTPRoute = nil
-	if err := kubeClient.Update(ctx, server); err != nil {
-		t.Fatalf("disable PolarisServer exposure: %v", err)
-	}
-	if _, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: server.Namespace, Name: server.Name}}); err != nil {
-		t.Fatalf("reconcile after disabling exposure: %v", err)
-	}
-	if err := kubeClient.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name}, ingress); !apierrors.IsNotFound(err) {
-		t.Fatalf("Ingress after disabling spec = %v, want NotFound", err)
-	}
-	if err := kubeClient.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name}, httpRoute); !apierrors.IsNotFound(err) {
-		t.Fatalf("HTTPRoute after disabling spec = %v, want NotFound", err)
 	}
 }
 
@@ -197,7 +228,7 @@ func TestPolarisServerDoesNotAdoptExistingDeployment(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := &polarisv1alpha1.PolarisServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "polaris", Namespace: "default", UID: types.UID("server-uid")},
+		ObjectMeta: metav1.ObjectMeta{Name: polarisServerTestName, Namespace: testDefaultNamespace, UID: types.UID("server-uid")},
 		Spec:       polarisv1alpha1.PolarisServerSpec{Image: "apache/polaris:test"},
 	}
 	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: server.Name, Namespace: server.Namespace}}
