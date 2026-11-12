@@ -42,7 +42,7 @@ The chart defaults to cluster-wide watches to preserve existing behavior. `names
 
 When any namespace scope is configured, the chart creates RoleBindings for the release namespace (when `namespaceScope` is enabled) and every name in `watchNamespaces`. For selector matches, set `rbac.scopeNamespaces` to the matching namespace names so the chart can create their RoleBindings; Helm rendering fails if `rbac.create=true`, a selector is set, and this list is empty. Keep that list synchronized with the selector. The selector also requires cluster-scoped `get`/`list` access to Namespace objects; the chart grants only those permissions. If `rbac.create=false`, provision equivalent bindings and Namespace permissions yourself.
 
-`allowedHosts` is an exact allowlist of hostnames or `hostname:port` authorities that can receive Polaris credentials. It is empty by default, which denies all Polaris connections. HTTPS is required; `allowInsecureHTTP` opts into HTTP and should be limited to isolated development environments. A hostname without a port matches HTTPS on port 443; specify the port for non-default endpoints.
+`allowedHosts` optionally restricts exact hostnames or `hostname:port` authorities that can receive Polaris credentials. It is empty by default, which disables hostname filtering and permits any HTTPS endpoint. Configure it to restrict outbound destinations. HTTPS is required; `allowInsecureHTTP` opts into HTTP and should be limited to isolated development environments. A hostname without a port matches HTTPS on port 443; specify the port for non-default endpoints.
 
 Example:
 

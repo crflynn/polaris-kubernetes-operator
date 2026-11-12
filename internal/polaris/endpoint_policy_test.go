@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -115,6 +116,36 @@ func TestEndpointPolicyBlocksRedirectToUnlistedHost(t *testing.T) {
 	}
 }
 
+func TestEndpointPolicyLimitsRedirects(t *testing.T) {
+	t.Parallel()
+
+	var requests atomic.Int32
+	polarisServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Redirect(w, r, r.URL.RequestURI(), http.StatusTemporaryRedirect)
+	}))
+	defer polarisServer.Close()
+
+	policy, err := NewEndpointPolicy([]string{strings.TrimPrefix(polarisServer.URL, "http://")}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiClient, err := NewClient(Config{
+		ManagementURL:  polarisServer.URL,
+		Auth:           AuthConfig{BearerToken: testToken},
+		EndpointPolicy: policy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := apiClient.Check(context.Background()); err == nil {
+		t.Fatal("Check() succeeded after redirect limit was exceeded")
+	}
+	if got := requests.Load(); got != maxHTTPRedirects {
+		t.Fatalf("Polaris endpoint requests = %d, want %d", got, maxHTTPRedirects)
+	}
+}
+
 func TestNewEndpointPolicyRejectsMalformedAllowlistEntries(t *testing.T) {
 	t.Parallel()
 
@@ -124,18 +155,26 @@ func TestNewEndpointPolicyRejectsMalformedAllowlistEntries(t *testing.T) {
 		}
 	}
 }
-func TestEndpointPolicyEmptyAllowlistDeniesAll(t *testing.T) {
+func TestEndpointPolicyEmptyAllowlistAllowsAnyHTTPSHost(t *testing.T) {
 	t.Parallel()
 
 	policy, err := NewEndpointPolicy(nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	endpoint, err := parseBaseURL("https://polaris.example.com/api", "management URL")
+	httpsEndpoint, err := parseBaseURL("https://polaris.example.com/api", "management URL")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := policy.validate(endpoint, "management URL"); err == nil {
-		t.Fatal("empty allowlist allowed a Polaris endpoint")
+	if err := policy.validate(httpsEndpoint, "management URL"); err != nil {
+		t.Fatalf("empty allowlist rejected HTTPS host: %v", err)
+	}
+
+	httpEndpoint, err := parseBaseURL("http://polaris.example.com/api", "management URL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := policy.validate(httpEndpoint, "management URL"); err == nil {
+		t.Fatal("empty allowlist allowed HTTP without the explicit opt-in")
 	}
 }

@@ -38,6 +38,7 @@ const (
 	DefaultRequestTimeout     = 10 * time.Second
 	catalogConfigPath         = "/v1/config"
 	clientCredentialsGrant    = "client_credentials"
+	maxHTTPRedirects          = 10
 	schemeHTTP                = "http"
 	schemeHTTPS               = "https"
 )
@@ -165,7 +166,10 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 	if cfg.EndpointPolicy != nil {
 		policy := cfg.EndpointPolicy
-		cfg.HTTPClient.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		cfg.HTTPClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if len(via) >= maxHTTPRedirects {
+				return fmt.Errorf("stopped after %d redirects", maxHTTPRedirects)
+			}
 			return policy.validate(req.URL, "redirect URL")
 		}
 	}

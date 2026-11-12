@@ -218,7 +218,7 @@ func main() {
 	}
 
 	if len(strings.TrimSpace(os.Getenv("POLARIS_ALLOWED_HOSTS"))) == 0 {
-		setupLog.Info("Polaris endpoint allowlist is empty; all connections will be rejected")
+		setupLog.Info("Polaris endpoint host allowlist is empty; host-based checks are disabled")
 	}
 
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{

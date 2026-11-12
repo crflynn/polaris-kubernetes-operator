@@ -31,7 +31,7 @@ type EndpointPolicy struct {
 }
 
 // NewEndpointPolicy constructs a policy from exact hostnames or host:port authorities.
-// An empty allowlist denies every endpoint.
+// An empty allowlist permits any hostname while retaining the scheme policy.
 func NewEndpointPolicy(allowedHosts []string, allowHTTP bool) (*EndpointPolicy, error) {
 	policy := &EndpointPolicy{
 		allowedAuthorities: make(map[string]struct{}, len(allowedHosts)),
@@ -64,6 +64,9 @@ func (p *EndpointPolicy) validate(endpoint *url.URL, name string) error {
 	authority, err := normalizeAuthority(endpoint.Host, endpoint.Scheme)
 	if err != nil {
 		return fmt.Errorf("invalid %s authority: %w", name, err)
+	}
+	if len(p.allowedAuthorities) == 0 {
+		return nil
 	}
 	if _, ok := p.allowedAuthorities[authority]; !ok {
 		return fmt.Errorf("%s host is not in the operator endpoint allowlist", name)
