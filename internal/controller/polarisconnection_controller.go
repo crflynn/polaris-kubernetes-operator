@@ -45,7 +45,8 @@ const connectionRequeueAfter = 30 * time.Second
 // PolarisConnectionReconciler reconciles a PolarisConnection object.
 type PolarisConnectionReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme         *runtime.Scheme
+	EndpointPolicy *polarisclient.EndpointPolicy
 }
 
 // +kubebuilder:rbac:groups=polaris.apache.org,resources=polarisconnections,verbs=get;list;watch;create;update;patch;delete
@@ -127,6 +128,7 @@ func (r *PolarisConnectionReconciler) newClient(ctx context.Context, connection 
 		NamespaceSeparator: connection.Status.NamespaceSeparator,
 		Auth:               auth,
 		HTTPClient:         httpClient,
+		EndpointPolicy:     r.EndpointPolicy,
 	})
 }
 

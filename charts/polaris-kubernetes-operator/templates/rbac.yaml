@@ -1,4 +1,7 @@
 {{- if .Values.rbac.create }}
+{{- if and .Values.rbac.create (ne .Values.watchNamespaceSelector "") (not .Values.rbac.scopeNamespaces) }}
+{{- fail "rbac.scopeNamespaces must list the namespaces selected by watchNamespaceSelector so RoleBindings can be created there" }}
+{{- end }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -60,6 +63,8 @@ rules:
       - polarisgenerictables/finalizers
       - polarisconnections/finalizers
     verbs: [update]
+{{- $scopeEnabled := or .Values.namespaceScope (gt (len .Values.watchNamespaces) 0) (ne .Values.watchNamespaceSelector "") }}
+{{- if not $scopeEnabled }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -75,6 +80,59 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "polaris-kubernetes-operator.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+{{- else }}
+{{- $bindingNamespaces := list }}
+{{- if .Values.namespaceScope }}
+{{- $bindingNamespaces = append $bindingNamespaces .Release.Namespace }}
+{{- end }}
+{{- $bindingNamespaces = concat $bindingNamespaces .Values.watchNamespaces .Values.rbac.scopeNamespaces | uniq }}
+{{- range $namespace := $bindingNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ printf "%s-scope" (include "polaris-kubernetes-operator.fullname" $ | trunc 56 | trimSuffix "-") }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "polaris-kubernetes-operator.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "polaris-kubernetes-operator.fullname" $ }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "polaris-kubernetes-operator.serviceAccountName" $ }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+{{- end }}
+{{- if and .Values.rbac.create (ne .Values.watchNamespaceSelector "") }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ printf "%s-namespace-reader" (include "polaris-kubernetes-operator.fullname" . | trunc 46 | trimSuffix "-") }}
+  labels:
+    {{- include "polaris-kubernetes-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ printf "%s-namespace-reader" (include "polaris-kubernetes-operator.fullname" . | trunc 46 | trimSuffix "-") }}
+  labels:
+    {{- include "polaris-kubernetes-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ printf "%s-namespace-reader" (include "polaris-kubernetes-operator.fullname" . | trunc 46 | trimSuffix "-") }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "polaris-kubernetes-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

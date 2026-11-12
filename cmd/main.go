@@ -17,9 +17,13 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -37,7 +41,7 @@ import (
 
 	polarisv1alpha1 "github.com/apache/polaris-kubernetes-operator/api/v1alpha1"
 	"github.com/apache/polaris-kubernetes-operator/internal/controller"
-	// +kubebuilder:scaffold:imports
+	polarisclient "github.com/apache/polaris-kubernetes-operator/internal/polaris"
 )
 
 var (
@@ -158,8 +162,68 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+	restConfig := ctrl.GetConfigOrDie()
+	namespaceScope := false
+	if raw := strings.TrimSpace(os.Getenv("NAMESPACE_SCOPE")); raw != "" {
+		parsedScope, parseErr := strconv.ParseBool(raw)
+		if parseErr != nil {
+			setupLog.Error(parseErr, "Invalid NAMESPACE_SCOPE value")
+			os.Exit(1)
+		}
+		namespaceScope = parsedScope
+	}
+	watchScope, err := parseNamespaceWatchScope(
+		os.Getenv("WATCH_NAMESPACE"),
+		os.Getenv("WATCH_NAMESPACE_SELECTOR"),
+		namespaceScope,
+		os.Getenv("POD_NAMESPACE"),
+	)
+	if err != nil {
+		setupLog.Error(err, "Invalid namespace watch scope")
+		os.Exit(1)
+	}
+	discoveryCtx, cancelDiscovery := context.WithTimeout(context.Background(), 30*time.Second)
+	cacheOptions, err := namespaceCacheOptions(discoveryCtx, restConfig, watchScope)
+	cancelDiscovery()
+	if err != nil {
+		setupLog.Error(err, "Failed to configure namespace watch scope")
+		os.Exit(1)
+	}
+
+	allowInsecureHTTP := false
+	if raw := strings.TrimSpace(os.Getenv("POLARIS_ALLOW_INSECURE_HTTP")); raw != "" {
+		allowInsecureHTTP, err = strconv.ParseBool(raw)
+		if err != nil {
+			setupLog.Error(err, "Invalid POLARIS_ALLOW_INSECURE_HTTP value")
+			os.Exit(1)
+		}
+	}
+	endpointPolicy, err := polarisclient.NewEndpointPolicy(
+		strings.Split(os.Getenv("POLARIS_ALLOWED_HOSTS"), ","),
+		allowInsecureHTTP,
+	)
+	if err != nil {
+		setupLog.Error(err, "Invalid Polaris endpoint allowlist")
+		os.Exit(1)
+	}
+
+	if watchScope.restricted {
+		selector := ""
+		if watchScope.selector != nil {
+			selector = watchScope.selector.String()
+		}
+		setupLog.Info("Running with namespace-scoped watches", "namespaces", watchScope.namespaces, "selector", selector)
+	} else {
+		setupLog.Info("Running with cluster-scoped watches")
+	}
+
+	if len(strings.TrimSpace(os.Getenv("POLARIS_ALLOWED_HOSTS"))) == 0 {
+		setupLog.Info("Polaris endpoint allowlist is empty; all connections will be rejected")
+	}
+
+	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                 scheme,
+		Cache:                  cacheOptions,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
@@ -183,8 +247,9 @@ func main() {
 	}
 
 	if err := (&controller.PolarisConnectionReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		EndpointPolicy: endpointPolicy,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "polarisconnection")
 		os.Exit(1)
