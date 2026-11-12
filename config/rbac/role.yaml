@@ -13,6 +13,50 @@ rules:
   - list
   - watch
 - apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - gateway.networking.k8s.io
+  resources:
+  - httproutes
+  verbs:
+  - create
+  - delete
+  - get
+  - patch
+  - update
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - ingresses
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - polaris.apache.org
   resources:
   - polariscatalogrolebindings
@@ -71,9 +115,18 @@ rules:
   - polarisprincipalrolebindings/status
   - polarisprincipalroles/status
   - polarisprincipals/status
+  - polarisservers/status
   - polaristables/status
   - polarisviews/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - polaris.apache.org
+  resources:
+  - polarisservers
+  verbs:
+  - get
+  - list
+  - watch

@@ -1,0 +1,47 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisServer
+metadata:
+  name: polaris
+  namespace: polaris-system
+spec:
+  image: apache/polaris:1.8.0
+  replicas: 1
+  port: 8181
+  managementPort: 8182
+  service:
+    type: ClusterIP
+  serviceAccountName: polaris-runtime
+  imagePullSecrets:
+    - name: registry-auth
+  podAnnotations:
+    prometheus.io/scrape: "true"
+  nodeSelector:
+    kubernetes.io/os: linux
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 2Gi
+  # Supply Polaris configuration through existing resources. Database, object
+  # storage, and identity provider remain independently managed.
+  envFrom:
+    - configMapRef:
+        name: polaris-server-config
+    - secretRef:
+        name: polaris-server-credentials
+  ingress:
+    host: polaris.example.com
+    ingressClassName: nginx
+    path: /
+    tlsSecretName: polaris-tls
+    annotations:
+      nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  httpRoute:
+    parentRefs:
+      - name: shared-gateway
+        namespace: gateway-system
+        sectionName: https
+    hostnames:
+      - polaris.example.com
+    path: /

@@ -16,6 +16,7 @@ resources:
 - bases/polaris.apache.org_polaristables.yaml
 - bases/polaris.apache.org_polarisviews.yaml
 - bases/polaris.apache.org_polarisgenerictables.yaml
+- bases/polaris.apache.org_polarisservers.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

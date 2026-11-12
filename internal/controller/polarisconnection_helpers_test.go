@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+const connectionTestPolarisResourceName = "polaris"
 const (
 	connectionTestOAuth                 = "OAUTH"
 	connectionTestBearer                = "BEARER"
@@ -196,7 +197,7 @@ func TestConnectionFailureStatusIsRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	connection := &polarisv1alpha1.PolarisConnection{
-		ObjectMeta: metav1.ObjectMeta{Name: "polaris", Namespace: connectionTestNamespace, Generation: 4},
+		ObjectMeta: metav1.ObjectMeta{Name: connectionTestPolarisResourceName, Namespace: connectionTestNamespace, Generation: 4},
 	}
 	kubeClient := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(connection).

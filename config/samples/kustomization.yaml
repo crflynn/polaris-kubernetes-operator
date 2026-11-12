@@ -15,4 +15,5 @@ resources:
 - polaris_v1alpha1_polaristable.yaml
 - polaris_v1alpha1_polarisview.yaml
 - polaris_v1alpha1_polarisgenerictable.yaml
+- polaris_v1alpha1_polarisserver.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
