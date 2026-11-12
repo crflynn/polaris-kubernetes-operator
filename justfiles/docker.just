@@ -1,6 +1,6 @@
 # Keep commands alphabetized.
 container-tool := env_var_or_default("CONTAINER_TOOL", "docker")
-platforms := env_var_or_default("PLATFORMS", "linux/arm64,linux/amd64,linux/s390x,linux/ppc64le")
+platforms := env_var_or_default("PLATFORMS", "linux/amd64,linux/arm64")
 
 # Build the manager container image.
 docker-build:
