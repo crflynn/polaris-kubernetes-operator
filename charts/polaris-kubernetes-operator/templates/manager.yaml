@@ -55,6 +55,21 @@ spec:
             {{- if .Values.metrics.enabled }}
             - --metrics-bind-address=:{{ .Values.metrics.service.port }}
             {{- end }}
+          env:
+            - name: NAMESPACE_SCOPE
+              value: {{ .Values.namespaceScope | quote }}
+            - name: WATCH_NAMESPACE
+              value: {{ join "," .Values.watchNamespaces | quote }}
+            - name: WATCH_NAMESPACE_SELECTOR
+              value: {{ .Values.watchNamespaceSelector | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POLARIS_ALLOWED_HOSTS
+              value: {{ join "," .Values.allowedHosts | quote }}
+            - name: POLARIS_ALLOW_INSECURE_HTTP
+              value: {{ .Values.allowInsecureHTTP | quote }}
           ports:
             - name: health
               containerPort: 8081

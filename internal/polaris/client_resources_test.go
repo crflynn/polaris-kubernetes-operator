@@ -550,7 +550,7 @@ func TestIcebergTableAndViewRequestContracts(t *testing.T) {
 
 func TestIcebergClientRequiresCatalogURL(t *testing.T) {
 	client, err := NewClient(Config{
-		ManagementURL: "https://polaris.example.com/api/management/v1",
+		ManagementURL: testPolarisManagementURL,
 		Auth:          AuthConfig{BearerToken: testBearerToken},
 	})
 	if err != nil {

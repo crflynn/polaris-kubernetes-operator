@@ -29,13 +29,14 @@ import (
 const testRealmHeader = "X-Polaris-Realm"
 
 const (
-	testPolarisRealm        = "POLARIS"
-	testToken               = "test-token"
-	testPolicyType          = "system.retention"
-	testBearerAuthorization = "Bearer " + testToken
-	testSchemaName          = "schema"
-	testOwnerProperty       = "owner"
-	testEventName           = "events"
+	testPolarisRealm         = "POLARIS"
+	testPolarisManagementURL = "https://polaris.example.com/api/management/v1"
+	testToken                = "test-token"
+	testPolicyType           = "system.retention"
+	testBearerAuthorization  = "Bearer " + testToken
+	testSchemaName           = "schema"
+	testOwnerProperty        = "owner"
+	testEventName            = "events"
 )
 
 func TestClientCheckUsesTokenAndRealm(t *testing.T) {
@@ -248,7 +249,7 @@ func assertAuthAndRealm(t *testing.T, r *http.Request) {
 }
 
 func TestCatalogResourceURLEscapesNameAsSingleSegment(t *testing.T) {
-	base, err := parseBaseURL("https://polaris.example.com/api/management/v1", "management URL")
+	base, err := parseBaseURL(testPolarisManagementURL, "management URL")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +417,7 @@ func TestPolicyClientRequiresCatalogURL(t *testing.T) {
 	t.Parallel()
 
 	apiClient, err := NewClient(Config{
-		ManagementURL: "https://polaris.example.com/api/management/v1",
+		ManagementURL: testPolarisManagementURL,
 		Auth:          AuthConfig{BearerToken: testToken},
 	})
 	if err != nil {

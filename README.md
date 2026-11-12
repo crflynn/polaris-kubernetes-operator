@@ -74,7 +74,8 @@ Set `OWNER` to the GitHub account that owns the published OCI packages before ru
 helm install polaris-operator ./charts/polaris-kubernetes-operator \
   --namespace polaris-system --create-namespace \
   --set image.repository=ghcr.io/${OWNER}/polaris-kubernetes-operator \
-  --set image.tag=0.1.0
+  --set image.tag=0.1.0 \
+  --set-string 'allowedHosts[0]=polaris.example.com'
 ```
 
 The chart and CRD lifecycle, configurable values, and packaging instructions are documented in [`charts/polaris-kubernetes-operator/README.md`](charts/polaris-kubernetes-operator/README.md).
@@ -107,6 +108,10 @@ Polaris generic tables are beta and are not advertised in `/v1/config`'s endpoin
 Custom CA bundles are supported through `spec.tls.caSecretRef`.
 
 The controller never writes credentials or access tokens into status, logs, events, or Polaris properties.
+
+The Helm chart's `allowedHosts` optionally restricts exact destination authorities that can receive Polaris credentials. When empty (the default), any HTTPS Polaris endpoint is accepted; configure entries to restrict outbound hosts. Include the Polaris API host and any separate OAuth token host. `allowInsecureHTTP` is an explicit opt-in for isolated development environments. Non-Helm deployments can set `POLARIS_ALLOWED_HOSTS` to restrict destination hosts and should set `POLARIS_ALLOW_INSECURE_HTTP` only when necessary.
+
+Namespace scope is configurable through `namespaceScope`, `watchNamespaces`, and `watchNamespaceSelector` in the Helm chart, or through `NAMESPACE_SCOPE`, `WATCH_NAMESPACE`, and `WATCH_NAMESPACE_SELECTOR` environment variables. The selector is evaluated at startup; restart the operator after namespace label changes. For non-Helm installs, scope the manager's RBAC with RoleBindings in only the selected namespaces; namespace selectors also require `get` and `list` on Namespace resources. Namespace scoping limits which namespaces the operator can access, but does not restrict outbound Polaris hosts unless an endpoint host allowlist is configured or restrict who can create `PolarisConnection` resources.
 
 Example:
 

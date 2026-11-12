@@ -38,6 +38,9 @@ const (
 	DefaultRequestTimeout     = 10 * time.Second
 	catalogConfigPath         = "/v1/config"
 	clientCredentialsGrant    = "client_credentials"
+	maxHTTPRedirects          = 10
+	schemeHTTP                = "http"
+	schemeHTTPS               = "https"
 )
 
 // AuthConfig contains one authentication method for a Polaris client.
@@ -58,6 +61,7 @@ type Config struct {
 	NamespaceSeparator string
 	Auth               AuthConfig
 	HTTPClient         *http.Client
+	EndpointPolicy     *EndpointPolicy
 }
 
 // Client performs authenticated Polaris API checks and catalog operations.
@@ -116,11 +120,17 @@ func NewClient(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := cfg.EndpointPolicy.validate(managementURL, "management URL"); err != nil {
+		return nil, err
+	}
 
 	var catalogURL *url.URL
 	if cfg.CatalogURL != "" {
 		catalogURL, err = parseBaseURL(cfg.CatalogURL, "catalog URL")
 		if err != nil {
+			return nil, err
+		}
+		if err := cfg.EndpointPolicy.validate(catalogURL, "catalog URL"); err != nil {
 			return nil, err
 		}
 	}
@@ -131,6 +141,9 @@ func NewClient(cfg Config) (*Client, error) {
 		}
 		tokenURL, err := parseBaseURL(cfg.Auth.TokenURL, "token URL")
 		if err != nil {
+			return nil, err
+		}
+		if err := cfg.EndpointPolicy.validate(tokenURL, "token URL"); err != nil {
 			return nil, err
 		}
 		cfg.Auth.TokenURL = tokenURL.String()
@@ -149,6 +162,15 @@ func NewClient(cfg Config) (*Client, error) {
 		cfg.HTTPClient, err = NewHTTPClient(DefaultRequestTimeout, nil)
 		if err != nil {
 			return nil, err
+		}
+	}
+	if cfg.EndpointPolicy != nil {
+		policy := cfg.EndpointPolicy
+		cfg.HTTPClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if len(via) >= maxHTTPRedirects {
+				return fmt.Errorf("stopped after %d redirects", maxHTTPRedirects)
+			}
+			return policy.validate(req.URL, "redirect URL")
 		}
 	}
 
@@ -422,8 +444,11 @@ func parseBaseURL(raw, name string) (*url.URL, error) {
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return nil, fmt.Errorf("%s must be an absolute URL", name)
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+	if parsed.Scheme != schemeHTTP && parsed.Scheme != schemeHTTPS {
 		return nil, fmt.Errorf("%s must use http or https", name)
+	}
+	if parsed.User != nil {
+		return nil, fmt.Errorf("%s must not contain URL credentials", name)
 	}
 	return parsed, nil
 }

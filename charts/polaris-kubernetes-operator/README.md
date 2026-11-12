@@ -13,7 +13,8 @@ For a source checkout:
 helm install polaris-operator ./charts/polaris-kubernetes-operator \
   --namespace polaris-system --create-namespace \
   --set image.repository=ghcr.io/${OWNER}/polaris-kubernetes-operator \
-  --set image.tag=0.1.0
+  --set image.tag=0.1.0 \
+  --set-string 'allowedHosts[0]=polaris.example.com'
 ```
 
 For the published OCI chart, install the release directly from GHCR:
@@ -22,7 +23,8 @@ For the published OCI chart, install the release directly from GHCR:
 helm install polaris-operator "oci://ghcr.io/${OWNER}/charts/polaris-kubernetes-operator" \
   --version 0.1.0 --namespace polaris-system --create-namespace \
   --set image.repository="ghcr.io/${OWNER}/polaris-kubernetes-operator" \
-  --set image.tag=0.1.0
+  --set image.tag=0.1.0 \
+  --set-string 'allowedHosts[0]=polaris.example.com'
 ```
 
 The tagged release workflow publishes the container and chart under the owner
@@ -36,9 +38,25 @@ For a packaged chart, replace the source path with the chart archive, such as `.
 
 ## Configure
 
-The chart defaults to one replica, a dedicated service account, cluster-scoped permissions for the operator's watched custom resources and Secrets, and an HTTPS metrics service on port 8443. Set `image.repository` and `image.tag` to the published operator image. `image.digest` can pin an immutable image digest instead of a tag.
+The chart defaults to cluster-wide watches to preserve existing behavior. `namespaceScope: true` adds the release namespace to the watch scope. `watchNamespaces` adds explicit namespace names, and `watchNamespaceSelector` selects namespaces by Kubernetes label selector. These settings can be combined. Namespace-selector matches are resolved at startup; restart the operator after namespace labels change.
 
-See `values.yaml` for supported deployment settings. Set `metrics.enabled=false` to disable the metrics endpoint, service, and metrics authorization RBAC. Set `rbac.create=false` only when equivalent permissions have been provisioned separately. If `serviceAccount.create=false`, set `serviceAccount.name` to an existing account.
+When any namespace scope is configured, the chart creates RoleBindings for the release namespace (when `namespaceScope` is enabled) and every name in `watchNamespaces`. For selector matches, set `rbac.scopeNamespaces` to the matching namespace names so the chart can create their RoleBindings; Helm rendering fails if `rbac.create=true`, a selector is set, and this list is empty. Keep that list synchronized with the selector. The selector also requires cluster-scoped `get`/`list` access to Namespace objects; the chart grants only those permissions. If `rbac.create=false`, provision equivalent bindings and Namespace permissions yourself.
+
+`allowedHosts` optionally restricts exact hostnames or `hostname:port` authorities that can receive Polaris credentials. It is empty by default, which disables hostname filtering and permits any HTTPS endpoint. Configure it to restrict outbound destinations. HTTPS is required; `allowInsecureHTTP` opts into HTTP and should be limited to isolated development environments. A hostname without a port matches HTTPS on port 443; specify the port for non-default endpoints.
+
+Example:
+
+```yaml
+namespaceScope: true
+watchNamespaces:
+  - analytics
+  - platform
+allowedHosts:
+  - polaris.example.com
+  - auth.example.com
+```
+
+Set `image.repository` and `image.tag` to the published operator image. `image.digest` can pin an immutable image digest instead of a tag.
 
 ## CRD lifecycle
 

@@ -62,6 +62,21 @@ spec:
           - --leader-elect
           - --health-probe-bind-address=:8081
         image: controller:latest
+        env:
+        - name: NAMESPACE_SCOPE
+          value: "false"
+        - name: WATCH_NAMESPACE
+          value: ""
+        - name: WATCH_NAMESPACE_SELECTOR
+          value: ""
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POLARIS_ALLOWED_HOSTS
+          value: ""
+        - name: POLARIS_ALLOW_INSECURE_HTTP
+          value: "false"
         name: manager
         ports:
         - containerPort: 8081

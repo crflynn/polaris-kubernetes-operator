@@ -54,6 +54,8 @@ const metricsServiceName = "polaris-kubernetes-operator-controller-manager-metri
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "polaris-kubernetes-operator-metrics-binding"
 
+const managerDeploymentName = "polaris-kubernetes-operator-controller-manager"
+
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
 
@@ -102,6 +104,16 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("mise", "exec", "-C", ".", "--", "just", "--set", "img", managerImage, "deploy")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("configuring the in-cluster Polaris endpoint allowlist")
+		cmd = exec.Command("kubectl", "set", "env", "deployment/"+managerDeploymentName, "-n", namespace,
+			"POLARIS_ALLOWED_HOSTS=polaris-mock.polaris-mock.svc.cluster.local:8080",
+			"POLARIS_ALLOW_INSECURE_HTTP=true")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to configure the Polaris endpoint allowlist")
+		cmd = exec.Command("kubectl", "rollout", "status", "deployment/"+managerDeploymentName, "-n", namespace, "--timeout=2m")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Controller manager did not restart with endpoint policy")
 	})
 
 	// After all tests have executed, clean up the test resources and cluster objects.

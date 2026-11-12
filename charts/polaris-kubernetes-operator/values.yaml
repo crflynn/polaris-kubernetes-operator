@@ -11,6 +11,13 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+namespaceScope: false
+watchNamespaces: []
+watchNamespaceSelector: ""
+
+allowedHosts: []
+allowInsecureHTTP: false
+
 serviceAccount:
   create: true
   # Defaults to the chart fullname when empty.
@@ -18,6 +25,8 @@ serviceAccount:
 
 rbac:
   create: true
+  # Namespaces requiring RoleBindings when WATCH_NAMESPACE_SELECTOR is used.
+  scopeNamespaces: []
 
 manager:
   args:
