@@ -68,10 +68,12 @@ Confirm `kubectl config current-context` points to the intended cluster before i
 
 The chart installs the operator and its CRDs; it does not install the Polaris server. Point the operator at an existing Polaris endpoint by creating a `PolarisConnection`.
 
+Set `OWNER` to the GitHub account that owns the published OCI packages before running the command.
+
 ```sh
 helm install polaris-operator ./charts/polaris-kubernetes-operator \
   --namespace polaris-system --create-namespace \
-  --set image.repository=ghcr.io/apache/polaris-kubernetes-operator \
+  --set image.repository=ghcr.io/${OWNER}/polaris-kubernetes-operator \
   --set image.tag=0.1.0
 ```
 

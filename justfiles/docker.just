@@ -11,7 +11,7 @@ docker-buildx:
     @set -euo pipefail; \
     {{container-tool}} buildx create --name polaris-kubernetes-operator-builder || true; \
     {{container-tool}} buildx use polaris-kubernetes-operator-builder; \
-    {{container-tool}} buildx build --push --platform={{platforms}} --tag {{img}} .; \
+    {{container-tool}} buildx build --platform={{platforms}} --output "type=image,name={{img}},push=true,oci-mediatypes=true" .; \
     {{container-tool}} buildx rm polaris-kubernetes-operator-builder || true
 
 # Push the manager container image.

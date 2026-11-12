@@ -4,14 +4,33 @@ This chart installs the Polaris Kubernetes Operator and its CustomResourceDefini
 
 ## Install
 
+Set `OWNER` in your shell to the GitHub account that owns the published OCI
+packages before running these commands.
+
 For a source checkout:
 
 ```sh
 helm install polaris-operator ./charts/polaris-kubernetes-operator \
   --namespace polaris-system --create-namespace \
-  --set image.repository=ghcr.io/apache/polaris-kubernetes-operator \
+  --set image.repository=ghcr.io/${OWNER}/polaris-kubernetes-operator \
   --set image.tag=0.1.0
 ```
+
+For the published OCI chart, install the release directly from GHCR:
+
+```sh
+helm install polaris-operator "oci://ghcr.io/${OWNER}/charts/polaris-kubernetes-operator" \
+  --version 0.1.0 --namespace polaris-system --create-namespace \
+  --set image.repository="ghcr.io/${OWNER}/polaris-kubernetes-operator" \
+  --set image.tag=0.1.0
+```
+
+The tagged release workflow publishes the container and chart under the owner
+of the GitHub repository that triggered the release. Set `OWNER` to that
+GitHub account when installing. The image is
+`ghcr.io/${OWNER}/polaris-kubernetes-operator:X.Y.Z`; the chart is
+`oci://ghcr.io/${OWNER}/charts/polaris-kubernetes-operator` with version
+`X.Y.Z`. They use separate GHCR repositories to avoid tag collisions.
 
 For a packaged chart, replace the source path with the chart archive, such as `./polaris-kubernetes-operator-0.1.0.tgz`.
 
@@ -37,4 +56,4 @@ just helm-template
 just helm-package
 ```
 
-Pushing a `vX.Y.Z` Git tag runs the release workflow after tests, lint, E2E, generated-file, and chart validation pass. The workflow publishes the multi-platform image as `ghcr.io/apache/polaris-kubernetes-operator:X.Y.Z` and the chart to `oci://ghcr.io/apache/polaris-kubernetes-operator` with version `X.Y.Z`. Configure the GitHub `release` environment with required reviewers and protect `v*` tags in repository rulesets; the workflow also needs permission to publish packages in the Apache organization.
+Pushing a `vX.Y.Z` Git tag runs the release workflow after tests, lint, E2E, generated-file, and chart validation pass. The workflow publishes the multi-platform image as `ghcr.io/<repository-owner>/polaris-kubernetes-operator:X.Y.Z` and the chart to `oci://ghcr.io/<repository-owner>/charts/polaris-kubernetes-operator` with version `X.Y.Z`. The owner is derived from the GitHub repository, so forks publish under their own owner. These use separate GHCR repositories because a chart and container image cannot use the same tag in the same repository. Configure the GitHub `release` environment with required reviewers and protect `v*` tags in repository rulesets; the workflow needs permission to publish packages under the repository owner.

@@ -87,11 +87,13 @@ jobs:
 
       - name: Package and publish Helm chart
         env:
+          CHART_REGISTRY: ghcr.io/${{ github.repository_owner }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          CHART_REGISTRY="${CHART_REGISTRY,,}"
           mkdir -p dist/charts
           helm package charts/polaris-kubernetes-operator \
             --version "$VERSION" \
             --app-version "$VERSION" \
             --destination dist/charts
-          helm push "dist/charts/polaris-kubernetes-operator-${VERSION}.tgz" oci://ghcr.io/apache
+          helm push "dist/charts/polaris-kubernetes-operator-${VERSION}.tgz" "oci://${CHART_REGISTRY}/charts"
