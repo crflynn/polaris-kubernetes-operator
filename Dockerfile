@@ -21,7 +21,7 @@ COPY . .
 # was called. For example, when running `mise exec -C . -- just docker-build` on Apple Silicon,
 # the Docker BUILDPLATFORM will be linux/arm64 when for an x86 host it will be linux/amd64.
 # By leaving it empty we can ensure that the image matches the host architecture.
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -o manager cmd/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -o manager ./cmd
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
