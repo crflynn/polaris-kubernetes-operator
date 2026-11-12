@@ -1,0 +1,13 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisView
+metadata:
+  name: monthly-revenue
+  namespace: polaris-system
+spec:
+  catalogRef: warehouse
+  namespace:
+    - finance
+    - reporting
+  viewName: monthly_revenue
+  metadataLocation: s3://example-warehouse/data/finance/monthly-revenue/metadata/v1.metadata.json
+  ownershipMode: Enforce

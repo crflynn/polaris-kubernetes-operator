@@ -1,0 +1,25 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisCatalog
+metadata:
+  name: external-warehouse-oauth
+  namespace: polaris-system
+spec:
+  connectionRef: polaris
+  catalogName: external-warehouse-oauth
+  type: EXTERNAL
+  externalCatalog:
+    uri: https://iceberg.example.com/api/catalog
+    remoteCatalogName: analytics
+    authentication:
+      type: OAUTH
+      clientCredentials:
+        secretRef:
+          name: external-warehouse-oauth
+        tokenURL: https://iceberg.example.com/oauth/token
+  properties:
+    default-base-location: s3://example-warehouse/external-oauth/
+  storageConfigInfo:
+    storageType: S3
+    storageName: warehouse-storage
+    allowedLocations:
+      - s3://example-warehouse/external-oauth/

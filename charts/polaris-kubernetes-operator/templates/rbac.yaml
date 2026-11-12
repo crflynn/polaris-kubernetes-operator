@@ -1,0 +1,151 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "polaris-kubernetes-operator.fullname" . }}
+  labels:
+    {{- include "polaris-kubernetes-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, watch]
+  - apiGroups: [polaris.apache.org]
+    resources:
+      - polarisconnections
+      - polariscatalogs
+      - polarisprincipals
+      - polarisprincipalroles
+      - polariscatalogroles
+      - polarisprincipalrolebindings
+      - polariscatalogrolebindings
+      - polariscatalogrolegrants
+      - polarispolicies
+      - polarispolicybindings
+      - polarisnamespaces
+      - polaristables
+      - polarisviews
+      - polarisgenerictables
+    verbs: [create, delete, get, list, patch, update, watch]
+  - apiGroups: [polaris.apache.org]
+    resources:
+      - polarisconnections/status
+      - polariscatalogs/status
+      - polarisprincipals/status
+      - polarisprincipalroles/status
+      - polariscatalogroles/status
+      - polarisprincipalrolebindings/status
+      - polariscatalogrolebindings/status
+      - polariscatalogrolegrants/status
+      - polarispolicies/status
+      - polarispolicybindings/status
+      - polarisnamespaces/status
+      - polaristables/status
+      - polarisviews/status
+      - polarisgenerictables/status
+    verbs: [get, patch, update]
+  - apiGroups: [polaris.apache.org]
+    resources:
+      - polariscatalogs/finalizers
+      - polarisprincipals/finalizers
+      - polarisprincipalroles/finalizers
+      - polariscatalogroles/finalizers
+      - polarisprincipalrolebindings/finalizers
+      - polariscatalogrolebindings/finalizers
+      - polariscatalogrolegrants/finalizers
+      - polarispolicies/finalizers
+      - polarispolicybindings/finalizers
+      - polarisnamespaces/finalizers
+      - polaristables/finalizers
+      - polarisviews/finalizers
+      - polarisgenerictables/finalizers
+      - polarisconnections/finalizers
+    verbs: [update]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "polaris-kubernetes-operator.fullname" . }}
+  labels:
+    {{- include "polaris-kubernetes-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "polaris-kubernetes-operator.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "polaris-kubernetes-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "polaris-kubernetes-operator.leaderElectionName" . }}
+  labels:
+    {{- include "polaris-kubernetes-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create, delete, get, list, patch, update, watch]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [create, delete, get, list, patch, update, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "polaris-kubernetes-operator.leaderElectionName" . }}
+  labels:
+    {{- include "polaris-kubernetes-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "polaris-kubernetes-operator.leaderElectionName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "polaris-kubernetes-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.metrics.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "polaris-kubernetes-operator.metricsAuthName" . }}
+  labels:
+    {{- include "polaris-kubernetes-operator.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [authentication.k8s.io]
+    resources: [tokenreviews]
+    verbs: [create]
+  - apiGroups: [authorization.k8s.io]
+    resources: [subjectaccessreviews]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "polaris-kubernetes-operator.metricsAuthName" . }}
+  labels:
+    {{- include "polaris-kubernetes-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "polaris-kubernetes-operator.metricsAuthName" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "polaris-kubernetes-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "polaris-kubernetes-operator.metricsReaderName" . }}
+  labels:
+    {{- include "polaris-kubernetes-operator.labels" . | nindent 4 }}
+rules:
+  - nonResourceURLs: ["/metrics"]
+    verbs: [get]
+{{- end }}
+{{- end }}

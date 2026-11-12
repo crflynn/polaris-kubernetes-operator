@@ -1,0 +1,39 @@
+name: Conventional Commits
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+permissions: {}
+jobs:
+  commit-messages:
+    name: Validate PR commit messages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout pull request commits
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check Conventional Commit headers
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          pattern='^[a-z][a-z0-9-]*(\([^()]+\))?!?: [^[:space:]].*$'
+          invalid=0
+          commits="$(git rev-list --reverse --no-merges "$BASE_SHA..$HEAD_SHA")"
+          while IFS= read -r commit; do
+            [[ -n "$commit" ]] || continue
+            header="$(git show -s --format=%s "$commit")"
+            if [[ ! "$header" =~ $pattern ]]; then
+              printf 'Invalid Conventional Commit header in %s:\n  %s\n' "$commit" "$header" >&2
+              invalid=1
+            fi
+          done <<< "$commits"
+
+          if [[ "$invalid" -ne 0 ]]; then
+            echo 'Use <type>[optional scope][!]: <description> for each non-merge commit.' >&2
+            exit 1
+          fi

@@ -1,0 +1,85 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: polaris-mock
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: polaris-mock-nginx
+  namespace: polaris-mock
+data:
+  default.conf: |
+    server {
+      listen 8080;
+      default_type application/json;
+
+      location = /api/catalog/v1/oauth/tokens {
+        if ($request_method != POST) { return 405; }
+        return 200 '{"access_token":"e2e-access-token"}';
+      }
+
+      location = /api/management/v1/catalogs {
+        if ($http_authorization != "Bearer e2e-access-token") { return 401; }
+        return 200 '{"catalogs":[]}';
+      }
+
+      location = /api/catalog/v1/config {
+        if ($http_authorization != "Bearer e2e-access-token") { return 401; }
+        return 200 '{"endpoints":["GET /v1/{prefix}/namespaces"]}';
+      }
+
+      location = /api/management/v1/catalogs/e2e-warehouse {
+        if ($http_authorization != "Bearer e2e-access-token") { return 401; }
+        if ($request_method = DELETE) { return 204; }
+        if ($request_method != GET) { return 405; }
+        return 200 '{"name":"e2e-warehouse","type":"INTERNAL","properties":{"default-base-location":"s3://e2e-warehouse/data/"},"storageConfigInfo":{"storageType":"S3","allowedLocations":["s3://e2e-warehouse/data/"],"storageName":"e2e-warehouse-storage"},"entityVersion":23}';
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: polaris-mock
+  namespace: polaris-mock
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: polaris-mock
+  template:
+    metadata:
+      labels:
+        app: polaris-mock
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports:
+            - name: http
+              containerPort: 8080
+          readinessProbe:
+            tcpSocket:
+              port: http
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+              readOnly: true
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: polaris-mock-nginx
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: polaris-mock
+  namespace: polaris-mock
+spec:
+  selector:
+    app: polaris-mock
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

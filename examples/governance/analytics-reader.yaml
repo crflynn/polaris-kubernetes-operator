@@ -1,0 +1,69 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisPrincipal
+metadata:
+  name: analytics-reader
+  namespace: polaris-system
+spec:
+  connectionRef: polaris
+  principalName: analytics-reader
+  properties:
+    description: Read-only analytics identity
+  credentialsSecretName: analytics-reader-credentials
+  credentialsSecretTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: analytics-reader
+      annotations:
+        reflector.v1.k8s.emberstack.com/reflection-allowed: "true"
+        reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces: analytics
+---
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisPrincipalRole
+metadata:
+  name: analytics-readers
+  namespace: polaris-system
+spec:
+  connectionRef: polaris
+  roleName: analytics-readers
+  properties:
+    description: Shared access for analytics readers
+---
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisPrincipalRoleBinding
+metadata:
+  name: analytics-reader-membership
+  namespace: polaris-system
+spec:
+  principalRef: analytics-reader
+  principalRoleRef: analytics-readers
+---
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisCatalogRole
+metadata:
+  name: warehouse-readers
+  namespace: polaris-system
+spec:
+  catalogRef: warehouse
+  catalogRoleName: warehouse-readers
+  properties:
+    description: Read access within the warehouse catalog
+---
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisCatalogRoleBinding
+metadata:
+  name: analytics-readers-warehouse-role
+  namespace: polaris-system
+spec:
+  principalRoleRef: analytics-readers
+  catalogRoleRef: warehouse-readers
+---
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisCatalogRoleGrant
+metadata:
+  name: warehouse-readers-read-catalog
+  namespace: polaris-system
+spec:
+  catalogRoleRef: warehouse-readers
+  grant:
+    type: catalog
+    privilege: CATALOG_READ_PROPERTIES

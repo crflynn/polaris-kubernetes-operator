@@ -1,0 +1,97 @@
+name: Publish Release Artifacts
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+jobs:
+  validate:
+    permissions:
+      contents: read
+    name: Validate release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tagged code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup mise
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.25
+
+      - name: Install project tools
+        run: mise install
+
+      - name: Check Go module files
+        run: go mod tidy
+
+      - name: Run tests and lint
+        run: mise exec -C . -- just test lint lint-config
+
+      - name: Run Kind end-to-end tests
+        run: mise exec -C . -- just test-e2e
+
+      - name: Validate generated artifacts and chart
+        run: |
+          mise exec -C . -- just manifests generate fmt sync-chart-crds
+          mise exec -C . -- just helm-lint helm-template helm-package
+          git diff --exit-code
+
+  publish:
+    needs: validate
+    permissions:
+      contents: read
+      packages: write
+    name: Publish image and Helm chart
+    environment: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tagged code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup mise
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.25
+
+      - name: Install project tools
+        run: mise install
+
+      - name: Validate release tag
+        id: version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_REF_NAME" != "v$version" || ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected a release tag in vX.Y.Z form; got $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GitHub Container Registry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build and publish multi-platform image
+        env:
+          IMAGE_REPOSITORY: ghcr.io/${{ github.repository }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: mise exec -C . -- just --set img "${IMAGE_REPOSITORY,,}:${VERSION}" docker-buildx
+
+      - name: Package and publish Helm chart
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist/charts
+          helm package charts/polaris-kubernetes-operator \
+            --version "$VERSION" \
+            --app-version "$VERSION" \
+            --destination dist/charts
+          helm push "dist/charts/polaris-kubernetes-operator-${VERSION}.tgz" oci://ghcr.io/apache

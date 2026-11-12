@@ -1,0 +1,10 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisPrincipalRole
+metadata:
+  name: analytics-readers
+  namespace: default
+spec:
+  connectionRef: polaris
+  roleName: analytics-readers
+  properties:
+    description: Shared read access for analytics principals

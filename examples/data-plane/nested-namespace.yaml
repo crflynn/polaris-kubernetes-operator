@@ -1,0 +1,14 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisNamespace
+metadata:
+  name: finance-reporting
+  namespace: polaris-system
+spec:
+  catalogRef: warehouse
+  namespace:
+    - finance
+    - reporting
+  ownershipMode: Enforce
+  properties:
+    owner: finance-analytics
+    purpose: reporting

@@ -1,0 +1,16 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisCatalog
+metadata:
+  name: warehouse
+  namespace: polaris-system
+spec:
+  connectionRef: polaris
+  catalogName: warehouse
+  type: INTERNAL
+  properties:
+    default-base-location: s3://warehouse/data/
+  storageConfigInfo:
+    storageType: S3
+    storageName: warehouse-storage
+    allowedLocations:
+      - s3://warehouse/data/

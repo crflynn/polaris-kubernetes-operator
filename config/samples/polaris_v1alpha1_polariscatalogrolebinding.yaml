@@ -1,0 +1,8 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisCatalogRoleBinding
+metadata:
+  name: analytics-readers-warehouse-writers
+  namespace: default
+spec:
+  principalRoleRef: analytics-readers
+  catalogRoleRef: warehouse-writers

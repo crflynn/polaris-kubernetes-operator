@@ -1,0 +1,16 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisPrincipal
+metadata:
+  name: analytics-reader
+  namespace: default
+spec:
+  connectionRef: polaris
+  principalName: analytics-reader
+  properties:
+    description: Read-only analytics identity
+  credentialsSecretName: analytics-reader-credentials
+  credentialsSecretTemplate:
+    metadata:
+      annotations:
+        reflector.v1.k8s.emberstack.com/reflection-allowed: "true"
+        reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces: analytics

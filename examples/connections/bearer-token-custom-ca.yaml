@@ -1,0 +1,18 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisConnection
+metadata:
+  name: polaris-private-endpoint
+  namespace: polaris-system
+spec:
+  managementURL: https://polaris.internal.example.com/api/management/v1
+  catalogURL: https://polaris.internal.example.com/api/catalog
+  realm: PRODUCTION
+  auth:
+    bearerTokenSecretRef:
+      name: polaris-access-token
+      key: token
+  tls:
+    caSecretRef:
+      name: polaris-private-ca
+      key: ca.crt
+  timeoutSeconds: 30

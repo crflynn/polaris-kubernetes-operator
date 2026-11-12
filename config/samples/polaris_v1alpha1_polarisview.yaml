@@ -1,0 +1,13 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisView
+metadata:
+  name: customer-summary
+  namespace: polaris-system
+spec:
+  catalogRef: warehouse
+  namespace:
+    - analytics
+  viewName: customer-summary
+  metadataLocation: s3://warehouse/analytics/views/customer-summary/metadata/00001-abcdef.metadata.json
+  ownershipMode: Enforce
+  deletionPolicy: Orphan

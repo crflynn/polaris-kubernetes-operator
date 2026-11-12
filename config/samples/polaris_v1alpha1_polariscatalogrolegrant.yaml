@@ -1,0 +1,10 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisCatalogRoleGrant
+metadata:
+  name: warehouse-writers-read-catalog-properties
+  namespace: default
+spec:
+  catalogRoleRef: warehouse-writers
+  grant:
+    type: catalog
+    privilege: CATALOG_READ_PROPERTIES

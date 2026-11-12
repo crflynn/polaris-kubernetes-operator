@@ -1,0 +1,8 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisPrincipalRoleBinding
+metadata:
+  name: analytics-reader-binding
+  namespace: default
+spec:
+  principalRef: analytics-reader
+  principalRoleRef: analytics-readers

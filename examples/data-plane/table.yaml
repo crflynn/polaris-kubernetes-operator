@@ -1,0 +1,13 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisTable
+metadata:
+  name: transactions
+  namespace: polaris-system
+spec:
+  catalogRef: warehouse
+  namespace:
+    - finance
+    - reporting
+  tableName: transactions-2025
+  metadataLocation: s3://example-warehouse/data/finance/reporting/transactions-2025/metadata/v1.metadata.json
+  ownershipMode: Enforce

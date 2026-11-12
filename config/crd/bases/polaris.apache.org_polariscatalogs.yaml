@@ -1,0 +1,317 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: polariscatalogs.polaris.apache.org
+spec:
+  group: polaris.apache.org
+  names:
+    kind: PolarisCatalog
+    listKind: PolarisCatalogList
+    plural: polariscatalogs
+    singular: polariscatalog
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .spec.catalogName
+      name: Catalog
+      type: string
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              catalogName:
+                description: catalogName is the name used by Polaris; it need not
+                  match the Kubernetes name.
+                maxLength: 256
+                minLength: 1
+                type: string
+              connectionRef:
+                description: connectionRef names a PolarisConnection in the same namespace.
+                type: string
+              externalCatalog:
+                description: externalCatalog configures an Iceberg REST catalog. Authentication
+                  values are read from a Secret.
+                properties:
+                  authentication:
+                    description: authentication configures OAuth client credentials
+                      or a bearer token.
+                    properties:
+                      bearerTokenSecretRef:
+                        description: bearerTokenSecretRef references the Secret key
+                          containing a bearer token.
+                        properties:
+                          key:
+                            description: The key of the secret to select from.  Must
+                              be a valid secret key.
+                            type: string
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                          optional:
+                            description: Specify whether the Secret or its key must
+                              be defined
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      clientCredentials:
+                        description: clientCredentials references the OAuth credentials
+                          Secret.
+                        properties:
+                          clientIDKey:
+                            default: client-id
+                            description: clientIDKey selects the client ID key in
+                              the Secret.
+                            type: string
+                          clientSecretKey:
+                            default: client-secret
+                            description: clientSecretKey selects the client secret
+                              key in the Secret.
+                            type: string
+                          scopes:
+                            description: scopes are OAuth scopes sent as a space-delimited
+                              value.
+                            items:
+                              type: string
+                            type: array
+                          secretRef:
+                            description: secretRef references the Secret containing
+                              the client ID and secret.
+                            properties:
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                            type: object
+                            x-kubernetes-map-type: atomic
+                          tokenURL:
+                            description: tokenURL is the OAuth token endpoint.
+                            format: uri
+                            type: string
+                        required:
+                        - secretRef
+                        - tokenURL
+                        type: object
+                        x-kubernetes-validations:
+                        - message: secretRef.name is required
+                          rule: size(self.secretRef.name) > 0
+                      type:
+                        description: type selects OAuth client credentials or a bearer
+                          token.
+                        enum:
+                        - OAUTH
+                        - BEARER
+                        type: string
+                    required:
+                    - type
+                    type: object
+                    x-kubernetes-validations:
+                    - message: OAUTH requires clientCredentials
+                      rule: (self.type == 'OAUTH') == has(self.clientCredentials)
+                    - message: BEARER requires bearerTokenSecretRef
+                      rule: (self.type == 'BEARER') == has(self.bearerTokenSecretRef)
+                    - message: bearerTokenSecretRef.name is required
+                      rule: '!has(self.bearerTokenSecretRef) || size(self.bearerTokenSecretRef.name)
+                        > 0'
+                  properties:
+                    additionalProperties:
+                      type: string
+                    description: properties contains non-secret remote connection
+                      properties.
+                    type: object
+                  remoteCatalogName:
+                    description: remoteCatalogName selects a logical catalog served
+                      by the endpoint.
+                    type: string
+                  uri:
+                    description: uri is the base URL of the remote Iceberg REST catalog.
+                    format: uri
+                    type: string
+                required:
+                - authentication
+                - uri
+                type: object
+              properties:
+                additionalProperties:
+                  type: string
+                description: properties are Polaris catalog properties. Do not put
+                  credentials here.
+                type: object
+                x-kubernetes-validations:
+                - message: properties must include default-base-location
+                  rule: '''default-base-location'' in self'
+              storageConfigInfo:
+                description: |-
+                  storageConfigInfo describes the Polaris catalog storage backend.
+                  Provider credentials must be managed by Polaris, not stored here.
+                properties:
+                  allowedLocations:
+                    description: allowedLocations restricts the locations usable by
+                      the catalog.
+                    items:
+                      type: string
+                    type: array
+                  storageName:
+                    description: storageName references a server-side storage configuration.
+                    type: string
+                  storageType:
+                    description: storageType is the backing storage provider.
+                    enum:
+                    - S3
+                    - GCS
+                    - AZURE
+                    - FILE
+                    type: string
+                required:
+                - storageType
+                type: object
+              type:
+                default: INTERNAL
+                description: type selects an internal or external Polaris catalog.
+                enum:
+                - INTERNAL
+                - EXTERNAL
+                type: string
+            required:
+            - catalogName
+            - connectionRef
+            - properties
+            - storageConfigInfo
+            type: object
+            x-kubernetes-validations:
+            - message: externalCatalog must be set only for EXTERNAL catalogs
+              rule: (self.type == 'EXTERNAL') == has(self.externalCatalog)
+          status:
+            description: PolarisCatalogStatus defines the observed state of PolarisCatalog.
+            properties:
+              authenticationConfigurationHash:
+                description: authenticationConfigurationHash fingerprints the non-secret
+                  external auth configuration.
+                type: string
+              authenticationSecretName:
+                description: authenticationSecretName identifies the Secret used for
+                  external catalog creation.
+                type: string
+              authenticationSecretResourceVersion:
+                description: |-
+                  authenticationSecretResourceVersion tracks the Secret revision used to create an external catalog.
+                  Polaris does not support updating external connection authentication through UpdateCatalog.
+                type: string
+              conditions:
+                description: conditions represent the current state of the PolarisCatalog
+                  resource.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              entityVersion:
+                description: entityVersion is Polaris' optimistic-concurrency version.
+                format: int64
+                type: integer
+              lastReconciledTime:
+                description: lastReconciledTime is the last successful remote reconciliation.
+                format: date-time
+                type: string
+              observedGeneration:
+                description: observedGeneration is the generation last reconciled.
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

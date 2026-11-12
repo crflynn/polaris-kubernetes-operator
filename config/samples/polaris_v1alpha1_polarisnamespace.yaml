@@ -1,0 +1,14 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisNamespace
+metadata:
+  name: analytics-curated
+  namespace: polaris-system
+spec:
+  catalogRef: warehouse
+  namespace:
+    - analytics
+    - curated
+  ownershipMode: Enforce
+  deletionPolicy: Orphan
+  properties:
+    owner: analytics-platform

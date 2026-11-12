@@ -1,0 +1,17 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisGenericTable
+metadata:
+  name: reference-codes
+  namespace: polaris-system
+spec:
+  catalogRef: warehouse
+  namespace:
+    - finance
+    - reporting
+  tableName: reference-codes
+  format: csv
+  baseLocation: s3://example-warehouse/data/finance/reporting/reference-codes/
+  doc: Reference codes shared by finance datasets.
+  properties:
+    owner: finance-analytics
+  ownershipMode: Enforce

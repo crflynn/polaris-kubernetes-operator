@@ -1,0 +1,24 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisCatalog
+metadata:
+  name: external-warehouse-bearer
+  namespace: polaris-system
+spec:
+  connectionRef: polaris
+  catalogName: external-warehouse-bearer
+  type: EXTERNAL
+  externalCatalog:
+    uri: https://iceberg.example.com/api/catalog
+    remoteCatalogName: analytics
+    authentication:
+      type: BEARER
+      bearerTokenSecretRef:
+        name: external-warehouse-token
+        key: token
+  properties:
+    default-base-location: s3://example-warehouse/external-bearer/
+  storageConfigInfo:
+    storageType: S3
+    storageName: warehouse-storage
+    allowedLocations:
+      - s3://example-warehouse/external-bearer/

@@ -1,0 +1,33 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisPolicy
+metadata:
+  name: finance-compaction
+  namespace: polaris-system
+spec:
+  catalogRef: warehouse
+  namespace:
+    - finance
+  policyName: finance-compaction
+  type: system.data-compaction
+  description: Data compaction policy for the finance namespace
+  content: |
+    {
+      "version": "2025-02-03",
+      "enable": true,
+      "config": {
+        "target_file_size_bytes": 134217728,
+        "compaction_strategy": "bin-pack",
+        "max-concurrent-file-group-rewrites": 5
+      }
+    }
+---
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisPolicyBinding
+metadata:
+  name: finance-compaction-binding
+  namespace: polaris-system
+spec:
+  policyRef: finance-compaction
+  targetType: namespace
+  namespace:
+    - finance

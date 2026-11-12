@@ -1,0 +1,39 @@
+name: Validate Artifacts
+
+on:
+  push:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  validate:
+    permissions:
+      contents: read
+    name: Validate generated files and Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup mise
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          version: 2026.10.25
+
+      - name: Install project tools
+        run: mise install
+
+      - name: Check Go module files
+        run: go mod tidy
+
+      - name: Regenerate manifests, code, formatting, and chart CRDs
+        run: mise exec -C . -- just manifests generate fmt sync-chart-crds
+
+      - name: Validate Helm chart
+        run: mise exec -C . -- just helm-lint helm-template helm-package
+
+      - name: Fail on generated or dependency drift
+        run: git diff --exit-code

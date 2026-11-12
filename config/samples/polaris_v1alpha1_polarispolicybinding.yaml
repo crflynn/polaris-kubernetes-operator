@@ -1,0 +1,10 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisPolicyBinding
+metadata:
+  name: retention-policy-accounting
+  namespace: default
+spec:
+  policyRef: retention-policy
+  targetType: namespace
+  namespace:
+    - accounting

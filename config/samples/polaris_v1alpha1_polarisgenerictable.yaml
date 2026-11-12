@@ -1,0 +1,16 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisGenericTable
+metadata:
+  name: event-metrics
+  namespace: polaris-system
+spec:
+  catalogRef: warehouse
+  namespace:
+    - analytics
+  tableName: event-metrics
+  format: delta
+  baseLocation: s3://warehouse/analytics/event-metrics
+  properties:
+    owner: analytics-platform
+  ownershipMode: Enforce
+  deletionPolicy: Orphan

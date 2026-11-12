@@ -1,0 +1,10 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisCatalogRole
+metadata:
+  name: analytics-writers
+  namespace: default
+spec:
+  catalogRef: warehouse
+  catalogRoleName: analytics-writers
+  properties:
+    description: Write access within the warehouse catalog

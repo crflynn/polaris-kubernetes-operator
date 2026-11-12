@@ -1,0 +1,18 @@
+## Append samples of your project ##
+resources:
+- polaris_v1alpha1_polarisconnection.yaml
+- polaris_v1alpha1_polariscatalog.yaml
+- polaris_v1alpha1_polariscatalog_external.yaml
+- polaris_v1alpha1_polarisprincipal.yaml
+- polaris_v1alpha1_polarisprincipalrole.yaml
+- polaris_v1alpha1_polariscatalogrole.yaml
+- polaris_v1alpha1_polarisprincipalrolebinding.yaml
+- polaris_v1alpha1_polariscatalogrolebinding.yaml
+- polaris_v1alpha1_polariscatalogrolegrant.yaml
+- polaris_v1alpha1_polarispolicy.yaml
+- polaris_v1alpha1_polarispolicybinding.yaml
+- polaris_v1alpha1_polarisnamespace.yaml
+- polaris_v1alpha1_polaristable.yaml
+- polaris_v1alpha1_polarisview.yaml
+- polaris_v1alpha1_polarisgenerictable.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

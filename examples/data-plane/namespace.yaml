@@ -1,0 +1,13 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisNamespace
+metadata:
+  name: finance
+  namespace: polaris-system
+spec:
+  catalogRef: warehouse
+  namespace:
+    - finance
+  ownershipMode: Enforce
+  properties:
+    owner: finance-analytics
+    cost-center: fin-42

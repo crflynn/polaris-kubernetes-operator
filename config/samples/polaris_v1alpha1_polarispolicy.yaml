@@ -1,0 +1,22 @@
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisPolicy
+metadata:
+  name: retention-policy
+  namespace: default
+spec:
+  catalogRef: warehouse
+  namespace:
+    - accounting
+  policyName: retention-policy
+  type: system.data-compaction
+  description: Data-compaction policy for the accounting namespace
+  content: |
+    {
+      "version": "2025-02-03",
+      "enable": true,
+      "config": {
+        "target_file_size_bytes": 134217728,
+        "compaction_strategy": "bin-pack",
+        "max-concurrent-file-group-rewrites": 5
+      }
+    }

@@ -1,0 +1,79 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - polaris.apache.org
+  resources:
+  - polariscatalogrolebindings
+  - polariscatalogrolegrants
+  - polariscatalogroles
+  - polariscatalogs
+  - polarisconnections
+  - polarisgenerictables
+  - polarisnamespaces
+  - polarispolicies
+  - polarispolicybindings
+  - polarisprincipalrolebindings
+  - polarisprincipalroles
+  - polarisprincipals
+  - polaristables
+  - polarisviews
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - polaris.apache.org
+  resources:
+  - polariscatalogrolebindings/finalizers
+  - polariscatalogrolegrants/finalizers
+  - polariscatalogroles/finalizers
+  - polariscatalogs/finalizers
+  - polarisconnections/finalizers
+  - polarisgenerictables/finalizers
+  - polarisnamespaces/finalizers
+  - polarispolicies/finalizers
+  - polarispolicybindings/finalizers
+  - polarisprincipalrolebindings/finalizers
+  - polarisprincipalroles/finalizers
+  - polarisprincipals/finalizers
+  - polaristables/finalizers
+  - polarisviews/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - polaris.apache.org
+  resources:
+  - polariscatalogrolebindings/status
+  - polariscatalogrolegrants/status
+  - polariscatalogroles/status
+  - polariscatalogs/status
+  - polarisconnections/status
+  - polarisgenerictables/status
+  - polarisnamespaces/status
+  - polarispolicies/status
+  - polarispolicybindings/status
+  - polarisprincipalrolebindings/status
+  - polarisprincipalroles/status
+  - polarisprincipals/status
+  - polaristables/status
+  - polarisviews/status
+  verbs:
+  - get
+  - patch
+  - update

@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: polaris-e2e-auth
+  namespace: polaris-kubernetes-operator-system
+stringData:
+  client-id: e2e-client
+  client-secret: e2e-secret
+---
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisConnection
+metadata:
+  name: polaris-e2e
+  namespace: polaris-kubernetes-operator-system
+spec:
+  managementURL: http://polaris-mock.polaris-mock.svc.cluster.local:8080/api/management/v1
+  catalogURL: http://polaris-mock.polaris-mock.svc.cluster.local:8080/api/catalog
+  tokenURL: http://polaris-mock.polaris-mock.svc.cluster.local:8080/api/catalog/v1/oauth/tokens
+  realm: E2E
+  auth:
+    clientCredentials:
+      secretRef:
+        name: polaris-e2e-auth
+---
+apiVersion: polaris.apache.org/v1alpha1
+kind: PolarisCatalog
+metadata:
+  name: polaris-e2e-warehouse
+  namespace: polaris-kubernetes-operator-system
+spec:
+  connectionRef: polaris-e2e
+  catalogName: e2e-warehouse
+  type: INTERNAL
+  properties:
+    default-base-location: s3://e2e-warehouse/data/
+  storageConfigInfo:
+    storageType: S3
+    storageName: e2e-warehouse-storage
+    allowedLocations:
+      - s3://e2e-warehouse/data/
