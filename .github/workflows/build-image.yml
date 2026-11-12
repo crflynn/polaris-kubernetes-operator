@@ -2,7 +2,22 @@ name: Build Image
 
 on:
   push:
+    branches: [main]
+    paths:
+      - '.dockerignore'
+      - '.github/workflows/build-image.yml'
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
+      - '**/*.go'
   pull_request:
+    paths:
+      - '.dockerignore'
+      - '.github/workflows/build-image.yml'
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
+      - '**/*.go'
 
 permissions: {}
 
